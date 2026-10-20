@@ -9,7 +9,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { Registry } from "../accounts/registry.js";
 import { ChildPool, TOOL_TIMEOUT_MS } from "../mux/children.js";
 import type { ChildClient, ChildSpec, OfficialTool, StartChild } from "../mux/children.js";
-import { createServer } from "../mux/server.js";
+import { createServer, handleCall, listTools } from "../mux/server.js";
 import type { CallDeps } from "../mux/server.js";
 import { MemoryTokenStore, type TokenStore } from "../secrets/token-store.js";
 import { buildCallDeps, serveStdio } from "../serve.js";
@@ -222,7 +222,7 @@ test("buildCallDeps starts no child", () =>
       starts += 1;
       throw new Error("no child may start in this test");
     };
-    const deps = buildCallDeps({ registry, tokens: new MemoryTokenStore(), start });
+    const deps = buildCallDeps({ loadRegistry: async () => registry, tokens: new MemoryTokenStore(), start });
     assert.strictEqual(await deps.registry(), registry);
     assert.equal(starts, 0);
   }));
@@ -236,7 +236,7 @@ test("a read takes its token from the store and uses the full tool timeout, and 
       specs.push(spec);
       return silentChild(timeouts);
     };
-    const deps = buildCallDeps({ registry, tokens, start });
+    const deps = buildCallDeps({ loadRegistry: async () => registry, tokens, start });
     await assert.rejects(deps.pool.read("work"), { message: NO_TOKEN_WORK });
     assert.deepEqual(specs, []);
 
@@ -261,10 +261,67 @@ test("an empty stored token counts as missing: the call is refused with the same
       set: async () => undefined,
       delete: async () => undefined,
     };
-    const deps = buildCallDeps({ registry, tokens, start });
+    const deps = buildCallDeps({ loadRegistry: async () => registry, tokens, start });
     await assert.rejects(deps.pool.read("work"), { message: NO_TOKEN_WORK });
     assert.equal(starts, 0);
   }));
+
+// An account record as accounts.json holds it, for the test that writes the file itself.
+const recordOf = (name: string) => ({
+  name,
+  email: `${name}@example.com`,
+  gotrueId: `fake-gotrue-${name}`,
+  added: "pat",
+  addedAt: ADDED_AT,
+});
+
+test("the registry is read through the loader at each call, so a change to the file is seen at the next call", async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), "serve-test-"));
+  try {
+    const file = path.join(folder, "accounts.json");
+    await writeFile(file, JSON.stringify({ default: "work", accounts: [recordOf("work"), recordOf("personal")] }));
+    let loads = 0;
+    const tokens = new MemoryTokenStore();
+    await tokens.set("work", "fake-token-for-work");
+    const starts: ChildSpec[] = [];
+    // The child lists the shared catalog, so list_projects is known. Without createServer, the catalog is read at each
+    // call.
+    const start: StartChild = async (spec) => {
+      starts.push(spec);
+      return {
+        listTools: async () => CATALOG,
+        callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        isAlive: () => true,
+        close: async () => undefined,
+      };
+    };
+    const deps = buildCallDeps({
+      loadRegistry: async () => {
+        loads += 1;
+        return Registry.load(file);
+      },
+      tokens,
+      start,
+    });
+    await listTools(deps);
+    assert.equal(loads, 1, "tools/list reads the registry once");
+    assert.notEqual((await handleCall(deps, "list_projects", { account: "work" })).isError, true);
+    assert.equal(loads, 2, "a tool call reads the registry once");
+    // The account is removed from the file. The next call reads the file again, and refuses the account.
+    await writeFile(file, JSON.stringify({ default: "personal", accounts: [recordOf("personal")] }));
+    const refused = await handleCall(deps, "list_projects", { account: "work" });
+    assert.equal(loads, 3, "the next call reads the file again");
+    assert.equal(refused.isError, true);
+    assert.deepEqual(refused.content, [{ type: "text", text: "Unknown account: work. Known accounts: personal." }]);
+    assert.equal(
+      starts.filter((spec) => spec.account === "work").length,
+      1,
+      "only the first call started a child for work",
+    );
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
 
 // A client calls a tool that reaches the account "work", then closes. serveStdio must close every child that was started,
 // and the child for "work" must close before serveStdio resolves. A hang fails the test after ten seconds.
@@ -289,7 +346,7 @@ test("the child for work closes before serveStdio resolves, and every child that
         },
       };
     };
-    const deps = buildCallDeps({ registry, tokens, start });
+    const deps = buildCallDeps({ loadRegistry: async () => registry, tokens, start });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const served = serveStdio(deps, { transport: serverTransport }).then(() => {
       events.push("serveStdio resolved");

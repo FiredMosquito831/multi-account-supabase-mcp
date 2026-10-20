@@ -7,12 +7,13 @@ import { startStdioChild } from "./mux/official-child.js";
 import { type CallDeps, createServer } from "./mux/server.js";
 import type { TokenStore } from "./secrets/token-store.js";
 
-// The inputs of buildCallDeps. start starts one official child. The real start is used unless a caller gives another,
-// which only the tests do, so that they can count the starts.
-type CallDepsOptions = { registry: Registry; tokens: TokenStore; start?: StartChild };
+// The inputs of buildCallDeps. loadRegistry reads the registry, and the server calls it at each call. start starts one
+// official child. The real start is used unless a caller gives another, which only the tests do, so that they can count
+// the starts.
+type CallDepsOptions = { loadRegistry: () => Promise<Registry>; tokens: TokenStore; start?: StartChild };
 
-// Builds what the server needs from the registry and the token store. It starts no child: a child starts on the first
-// call that needs its account, and the token is read from the store at that moment.
+// Builds what the server needs from the registry loader and the token store. It starts no child: a child starts on the
+// first call that needs its account, and the token is read from the store at that moment.
 export function buildCallDeps(options: CallDepsOptions): CallDeps {
   const pool = new ChildPool(options.start ?? startStdioChild, {
     toolTimeoutMs: TOOL_TIMEOUT_MS,
@@ -28,7 +29,7 @@ export function buildCallDeps(options: CallDepsOptions): CallDeps {
     },
   });
   return {
-    registry: async () => options.registry,
+    registry: async () => options.loadRegistry(),
     pool,
     // The catalog is read through the pool, which starts one child for it and closes that child again.
     catalog: () => pool.catalog(),

@@ -564,6 +564,116 @@ test("the catalog is read once for two lists, and both lists are the same", () =
     }
   }));
 
+// Writes accounts.json in the file, with these records and this default. Each later Registry.load reads the new
+// contents, so a test can change the records between two calls.
+async function writeAccounts(file: string, accounts: unknown[], defaultName: string | null): Promise<void> {
+  await writeFile(file, JSON.stringify({ default: defaultName, accounts }));
+}
+
+// The record of one account in accounts.json. A test can give another gotrueId and addedAt, to make a re-added account.
+const recordOf = (name: string, addedAt = ADDED_AT, gotrueId = `fake-gotrue-${name}`) => ({
+  name,
+  email: `${name}@example.com`,
+  gotrueId,
+  added: "pat",
+  addedAt,
+});
+
+// Runs the test in a folder of its own, and removes the folder afterwards.
+async function withAccountsFile(run: (file: string) => Promise<void>): Promise<void> {
+  const folder = await mkdtemp(path.join(os.tmpdir(), "server-sync-test-"));
+  try {
+    await run(path.join(folder, "accounts.json"));
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+}
+
+// The deps of a sync test. The registry is read from the file at each call, as the server reads it.
+const depsReading = (file: string, pool: ChildPool): CallDeps => ({
+  registry: () => Registry.load(file),
+  pool,
+  catalog: async () => CATALOG,
+});
+
+// A real ChildPool whose children record how many times each one is closed. Each child answers "ok". started has one
+// entry per child, in the order the children start.
+function recordingPool(tokenFor: (account: string) => Promise<string>) {
+  const started: { spec: ChildSpec; closes: number }[] = [];
+  const start: StartChild = async (spec) => {
+    const record = { spec, closes: 0 };
+    started.push(record);
+    return {
+      listTools: async () => [],
+      callTool: async () => ok("ok"),
+      isAlive: () => true,
+      close: async () => {
+        record.closes += 1;
+      },
+    };
+  };
+  return { pool: new ChildPool(start, { tokenFor }), started };
+}
+
+test("two calls with an unchanged registry start one child for one account, and the second call reuses it", () =>
+  withAccountsFile(async (file) => {
+    await writeAccounts(file, [recordOf("work")], "work");
+    const { pool, started } = recordingPool(async (account) => `fake-value-${account}`);
+    const deps = depsReading(file, pool);
+    assert.notEqual((await handleCall(deps, "list_projects", { account: "work" })).isError, true);
+    assert.notEqual((await handleCall(deps, "list_projects", { account: "work" })).isError, true);
+    assert.equal(started.length, 1, "one child is started");
+    assert.equal(started[0].closes, 0, "the child is kept, not closed");
+  }));
+
+test("a record replaced under the same name makes the next call start a new child, and the first child is closed once", () =>
+  withAccountsFile(async (file) => {
+    await writeAccounts(file, [recordOf("work")], "work");
+    const { pool, started } = recordingPool(async (account) => `fake-value-${account}`);
+    const deps = depsReading(file, pool);
+    await handleCall(deps, "list_projects", { account: "work" });
+    // The same name with a new addedAt is a different record, so the account's child is replaced.
+    await writeAccounts(file, [recordOf("work", "2026-10-21T09:00:00.000Z")], "work");
+    await handleCall(deps, "list_projects", { account: "work" });
+    assert.equal(started.length, 2, "the second call starts a new child");
+    assert.equal(started[0].closes, 1, "the first child is closed once");
+    assert.equal(started[1].closes, 0, "the new child is kept");
+  }));
+
+test("an account removed between two calls has its child closed at the next call of any kind, and a call for it is refused with no child started", () =>
+  withAccountsFile(async (file) => {
+    await writeAccounts(file, [recordOf("work"), recordOf("personal")], "work");
+    const { pool, started } = recordingPool(async (account) => `fake-value-${account}`);
+    const deps = depsReading(file, pool);
+    await handleCall(deps, "list_projects", { account: "work" });
+    await writeAccounts(file, [recordOf("personal")], "personal");
+    // account_list starts no child, but it is a call of another kind, so it still closes the removed account's child.
+    await handleCall(deps, "account_list", {});
+    assert.equal(started[0].closes, 1, "the removed account's child is closed at the next call");
+    const refused = await handleCall(deps, "list_projects", { account: "work" });
+    assert.equal(refused.isError, true);
+    assert.equal(textOf(refused), "Unknown account: work. Known accounts: personal.");
+    assert.equal(started.length, 1, "no child is started for the removed account");
+  }));
+
+test("an account removed and added again under the same name starts a new child for its new token", () =>
+  withAccountsFile(async (file) => {
+    await writeAccounts(file, [recordOf("work")], "work");
+    let token = "token-before-re-add";
+    const { pool, started } = recordingPool(async () => token);
+    const deps = depsReading(file, pool);
+    await handleCall(deps, "list_projects", { account: "work" });
+    // The new record has a new gotrueId and addedAt, and the token store holds the new token.
+    token = "token-after-re-add";
+    await writeAccounts(file, [recordOf("work", "2026-10-21T09:00:00.000Z", "fake-gotrue-work-again")], "work");
+    await handleCall(deps, "list_projects", { account: "work" });
+    assert.deepEqual(
+      started.map((record) => record.spec.token),
+      ["token-before-re-add", "token-after-re-add"],
+    );
+    assert.equal(started[0].closes, 1, "the child with the old token is closed");
+  }));
+
 test("a failed catalog read is not kept, so the next list reads again", () =>
   withRegistry(["work"], "work", async (registry) => {
     let reads = 0;

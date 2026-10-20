@@ -15,7 +15,8 @@ import type { Targets } from "./routing.js";
 
 const SERVER_NAME = "multi-account-supabase-mcp";
 
-// What the server needs from the rest of the program. catalog gives the official tools. createServer reads it once.
+// What the server needs from the rest of the program. registry gives the accounts, and each call reads them again, so a
+// change takes effect at the next call. catalog gives the official tools. createServer reads it once.
 export type CallDeps = {
   registry: () => Promise<Registry>;
   pool: ChildPool;
@@ -89,10 +90,41 @@ function toTool(tool: OfficialTool): Tool {
   };
 }
 
+// The last signature each pool was synced to. The key is the pool, so a new pool starts with no entry, and CallDeps
+// gets no new field.
+const syncedSignatures = new WeakMap<ChildPool, string>();
+
+// What a call compares with the last sync: the name, addedAt and gotrueId of each record, sorted by name. The token
+// and the default are not in it, and a change of default needs no child to close. Each record is written as a JSON
+// array, so two different sets of records never give the same text.
+function registrySignature(registry: Registry): string {
+  return registry
+    .list()
+    .map((account): [string, string, string] => [account.name, account.addedAt, account.gotrueId])
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map((fields) => JSON.stringify(fields))
+    .join("\n");
+}
+
+// Closes the account children when the records have changed since the last sync. A removed account stops at the next
+// call, and a re-added one (a new gotrueId or addedAt) gets a new child with its own token. The reset empties the
+// account entries before it returns, so no later call gets an old child. The sync does not wait for the closes, so a
+// child that does not stop cannot hold up a call. closeAll still waits for them.
+async function syncAccounts(deps: CallDeps, registry: Registry): Promise<void> {
+  const signature = registrySignature(registry);
+  if (syncedSignatures.get(deps.pool) === signature) {
+    return;
+  }
+  syncedSignatures.set(deps.pool, signature);
+  void deps.pool.resetAccounts();
+}
+
 // The tools of tools/list: the catalog with the account argument, the read-only query tool when it is exposed, and
-// account_list.
+// account_list. The registry is read first, and the account children are synced to it before the catalog is read.
 export async function listTools(deps: CallDeps): Promise<Tool[]> {
-  const accounts = (await deps.registry()).names();
+  const registry = await deps.registry();
+  await syncAccounts(deps, registry);
+  const accounts = registry.names();
   const catalog = await deps.catalog();
   const tools: OfficialTool[] = catalog.map((tool) => withAccountParam(tool, modeOf(tool.name), accounts));
   if (READONLY_QUERY_EXPOSED) {
@@ -116,9 +148,14 @@ export async function handleCall(deps: CallDeps, name: string, args: Record<stri
 // The steps of a call, in order. The first step that applies decides. A change is checked before the catalog is
 // read, so a refused change starts no child.
 async function route(deps: CallDeps, name: string, args: Record<string, unknown>): Promise<CallToolResult> {
+  // 0. The registry is read once for this call, and every step below uses that same registry. The account children are
+  // synced to it first, so this call is not handed a child of a removed account or an old token.
+  const registry = await deps.registry();
+  await syncAccounts(deps, registry);
+
   // 1. account_list needs only the registry.
   if (name === ACCOUNT_LIST_NAME) {
-    return textResult(accountListText(await deps.registry()), false);
+    return textResult(accountListText(registry), false);
   }
 
   // 2. The account argument belongs to the server. Everything else goes to the child as it is. The mode comes from the
@@ -133,7 +170,6 @@ async function route(deps: CallDeps, name: string, args: Record<string, unknown>
   // change too, because the table does not name it, so this step runs before the catalog is read.
   let targets: Targets | undefined;
   if (mode === "one") {
-    const registry = await deps.registry();
     const blank = account === undefined || (typeof account === "string" && account.trim() === "");
     if (blank) {
       const first: string | undefined = registry.names()[0];
@@ -161,7 +197,7 @@ async function route(deps: CallDeps, name: string, args: Record<string, unknown>
 
   // 6. A read names one account, several, or all of them. An unknown name is refused here.
   if (targets === undefined) {
-    targets = resolveTargets(account, await deps.registry());
+    targets = resolveTargets(account, registry);
   }
 
   // 7. One account. A change uses the writable child, and every other mode uses the read-only one.

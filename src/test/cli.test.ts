@@ -14,6 +14,8 @@ import { usageText } from "../usage.js";
 const TYPED = "tok-SECRET-123";
 const TOKEN_SHAPED = "sbp_fake-not-a-token";
 const TOKEN_NOTE = "That input looks like a token, so it is not repeated.";
+// The line that remove prints after the removed line, in both of its cases.
+const TOKEN_STILL_WORKS = "The Supabase token still works until you revoke it in your Supabase account settings.";
 const ADDED_AT = "2026-10-20T09:00:00.000Z";
 const WORK_PROFILE: Profile = { gotrueId: "gotrue-work", email: "a@example.com", username: "fake-user" };
 
@@ -204,7 +206,7 @@ test("(f) remove deletes the record and the token, and prints the removed line",
     assert.equal(added.code, 0);
     const result = await session.run(["remove", "work"]);
     assert.equal(result.code, 0);
-    assert.deepEqual(result.out, ['Removed "work".']);
+    assert.deepEqual(result.out, ['Removed "work".', TOKEN_STILL_WORKS]);
     assert.equal(await session.tokens.get("work"), undefined);
     assert.deepEqual((await Registry.load(session.file)).names(), []);
   }));
@@ -277,7 +279,7 @@ test("remove of a name with no record but a stored token deletes the token, prin
     await session.tokens.set("ghost", TYPED);
     const result = await session.run(["remove", "ghost"]);
     assert.equal(result.code, 0);
-    assert.deepEqual(result.out, ['Removed "ghost".']);
+    assert.deepEqual(result.out, ['Removed "ghost".', TOKEN_STILL_WORKS]);
     assert.deepEqual(result.err, []);
     assert.equal(await session.tokens.get("ghost"), undefined);
   }));
@@ -288,6 +290,21 @@ test("remove of a name with neither a record nor a token exits 1", () =>
     assert.equal(result.code, 1);
     assert.deepEqual(result.err, ['Error: No account named "nobody".']);
     assert.deepEqual(result.out, []);
+  }));
+
+test("remove prints the token line after the removed line, for a removed record and for a token alone", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work"]);
+    const withRecord = await session.run(["remove", "work"]);
+    assert.equal(withRecord.code, 0);
+    assert.deepEqual(withRecord.out, ['Removed "work".', TOKEN_STILL_WORKS]);
+    assert.deepEqual(withRecord.err, []);
+    await session.tokens.set("ghost", TYPED);
+    const tokenOnly = await session.run(["remove", "ghost"]);
+    assert.equal(tokenOnly.code, 0);
+    assert.deepEqual(tokenOnly.out, ['Removed "ghost".', TOKEN_STILL_WORKS]);
+    assert.deepEqual(tokenOnly.err, []);
   }));
 
 test("a serve that throws writes Error and the message to stderr, and returns 1", () =>

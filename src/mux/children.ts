@@ -114,8 +114,8 @@ export class ChildPool {
   // catalog start that is still pending is closed too. Whoever takes an entry out of this set closes its child, so each
   // child is closed once: closeAll takes every entry, and catalog() takes its own when its listing ends.
   private readonly catalogStarts = new Set<Promise<ChildClient>>();
-  // The closes that a catalog call or a timed-out call started, until each one settles. closeAll waits for them, so a
-  // close that is still running is not left open when closeAll returns.
+  // The closes that a catalog call, a timed-out call or a reset started, until each one settles. closeAll waits for
+  // them, so a close that is still running is not left open when closeAll returns.
   private readonly pendingCloses = new Set<Promise<void>>();
 
   constructor(
@@ -172,10 +172,10 @@ export class ChildPool {
 
   // Closes the pool. The flag is set first, so no call starts a child from now on. Every start in the map, and every
   // catalog start still in its set, is taken out and closed here, including a start that is still pending. closeAll
-  // also waits for the closes that are still running, the ones that a catalog call or a timed-out call started. It
-  // throws the first error among the closes that it takes itself, that is, the map entries and the catalog starts it
-  // holds. The errors of the closes that catalog() and a timed-out call start are not reported, because their callers
-  // already have a result.
+  // also waits for the closes that are still running, the ones that a catalog call, a timed-out call or a reset
+  // started. It throws the first error among the closes that it takes itself, that is, the map entries and the catalog
+  // starts it holds. The errors of the closes that catalog(), a timed-out call and a reset start are not reported,
+  // because their callers already have a result.
   async closeAll(): Promise<void> {
     this.closed = true;
     const opened = [...this.children.values(), ...this.catalogStarts];
@@ -194,6 +194,25 @@ export class ChildPool {
     if (failure?.status === "rejected") {
       throw failure.reason;
     }
+  }
+
+  // Closes every read and write child. The placeholder and the catalog stay open. Each account entry is taken out of
+  // the map before anything else runs, so a call after this one starts a new child for an account that is still
+  // registered. A child whose start is still running is closed when that start settles. A close error is not reported,
+  // because the call that asked for the reset has its own result. A closed pool has no entries left, because closeAll
+  // took them.
+  async resetAccounts(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    const closes: Promise<void>[] = [];
+    for (const [key, entry] of [...this.children]) {
+      if (key.startsWith("read:") || key.startsWith("write:")) {
+        this.children.delete(key);
+        closes.push(this.closeWhenStarted(entry));
+      }
+    }
+    await Promise.all(closes);
   }
 
   private async startAccount(account: string, readOnly: boolean): Promise<ChildClient> {
@@ -280,7 +299,26 @@ export class ChildPool {
   // Closes a child, and keeps the close in pendingCloses until it settles, so closeAll waits for it.
   // A close error is not reported here, because the caller already has its own result.
   private closeTracked(child: ChildClient): Promise<void> {
-    const closing = child.close().catch(() => undefined);
+    return this.track(child.close().catch(() => undefined));
+  }
+
+  // Closes the child of a start once the start settles. A start that failed has no child, so nothing is closed for it.
+  // The close is kept in pendingCloses until it settles, and a close error is not reported, as for closeTracked.
+  private closeWhenStarted(start: Promise<ChildClient>): Promise<void> {
+    return this.track(
+      (async () => {
+        const child = await start.catch(() => undefined);
+        try {
+          await child?.close();
+        } catch {
+          // Not reported, as the comment above says.
+        }
+      })(),
+    );
+  }
+
+  // Keeps a close in pendingCloses until it settles, so closeAll waits for it.
+  private track(closing: Promise<void>): Promise<void> {
     this.pendingCloses.add(closing);
     void closing.then(() => {
       this.pendingCloses.delete(closing);

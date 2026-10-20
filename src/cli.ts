@@ -19,14 +19,12 @@ const readSecret = (): Promise<string> => {
   return readSecretFrom(process.stdin, process.stderr);
 };
 
-// Loads the registry once, then serves the MCP server over stdio until the client closes stdin. The server module is
-// loaded here, so the other commands never load the MCP SDK. The registry is read only at this start. So an account added
-// while the server runs is not used until the server restarts, and a removed account's running child keeps its token until
-// the server restarts.
+// Serves the MCP server over stdio until the client closes stdin. The server module is loaded here, so the other
+// commands never load the MCP SDK. The registry is read before each call, so an account added, removed or re-added
+// while the server runs takes effect at the next call.
 const serveFromRegistryFile = async (registryFile: string, tokens: TokenStore): Promise<void> => {
   const { buildCallDeps, serveStdio } = await import("./serve.js");
-  const registry = await Registry.load(registryFile);
-  await serveStdio(buildCallDeps({ registry, tokens }));
+  await serveStdio(buildCallDeps({ loadRegistry: () => Registry.load(registryFile), tokens }));
 };
 
 // Builds the real streams and stores, then runs the command. The token store is loaded inside the try, as the server

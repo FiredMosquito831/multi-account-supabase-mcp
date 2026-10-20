@@ -30,6 +30,8 @@ const shown = (text: string): string => (looksLikeToken(text) ? TOKEN_NOTE : tex
 const NEEDS_PAT = "Adding an account needs --pat. Run in a terminal: multi-account-supabase-mcp add <name> --pat";
 const NOT_A_TERMINAL = "The token is typed in a terminal, not piped. Run this command in a terminal window.";
 const REDACTED = "[redacted]";
+// The line that remove prints after the removed line. Removing the record does not revoke the token at Supabase.
+const TOKEN_STILL_WORKS = "The Supabase token still works until you revoke it in your Supabase account settings.";
 
 // Removes each secret from a text. An empty secret is skipped, so it cannot split the text.
 const redact = (text: string, secrets: readonly string[]): string =>
@@ -217,6 +219,7 @@ const removeCommand = async (args: string[], io: CliIo): Promise<number> => {
       return 1;
     }
     io.stdout(`Removed "${shown(name)}".`);
+    io.stdout(TOKEN_STILL_WORKS);
     return 0;
   });
 };

@@ -624,6 +624,129 @@ test("a call that times out after closeAll took its child does not close that ch
   assert.equal(fake.children[0].closes, 1, "the timed-out call must not close the child a second time");
 });
 
+test("resetAccounts closes the account child once, and the next read starts a second child", async () => {
+  const fake = fakeStart();
+  const pool = new ChildPool(fake.start, { tokenFor });
+  const first = await pool.read("work");
+  await pool.resetAccounts();
+  assert.equal(fake.children[0].closes, 1, "the reset closes the account child");
+  const second = await pool.read("work");
+  assert.equal(fake.specs.length, 2, "the next read starts a second child");
+  assert.notStrictEqual(second, first);
+  await pool.closeAll();
+  assert.deepEqual(
+    fake.children.map((child) => child.closes),
+    [1, 1],
+    "closeAll closes the second child, and does not close the first one again",
+  );
+});
+
+test("resetAccounts leaves the placeholder child open, and a catalog child that is still listing", async () => {
+  const children: FakeChild[] = [];
+  let finishListing!: () => void;
+  const listing = new Promise<void>((resolve) => {
+    finishListing = resolve;
+  });
+  const start: StartChild = async () => {
+    const child = new FakeChild();
+    child.listTools = async () => {
+      child.lists += 1;
+      await listing;
+      return [];
+    };
+    children.push(child);
+    return child;
+  };
+  const pool = new ChildPool(start, { tokenFor });
+  await pool.read("work");
+  const placeholder = await pool.placeholder();
+  const cataloging = pool.catalog();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(children[2].lists, 1, "the catalog listing must have begun");
+  await pool.resetAccounts();
+  assert.equal(children[0].closes, 1, "the account child is closed");
+  assert.equal(children[1].closes, 0, "the placeholder child is not closed");
+  assert.equal(children[2].closes, 0, "the catalog child is not closed by the reset");
+  assert.strictEqual(await pool.placeholder(), placeholder, "the placeholder child is still the one in the pool");
+  finishListing();
+  assert.deepEqual(await cataloging, []);
+  assert.equal(children[2].closes, 1, "the catalog closes its own child once its listing ends");
+  await pool.closeAll();
+  assert.equal(children[1].closes, 1, "closeAll closes the placeholder child");
+});
+
+test("closeAll waits for a resetAccounts close that is still running, and closes that child once", { timeout: 5000 }, async () => {
+  const children: FakeChild[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let closeBegan!: () => void;
+  const began = new Promise<void>((resolve) => {
+    closeBegan = resolve;
+  });
+  const start: StartChild = async () => {
+    const child = new FakeChild();
+    child.close = async () => {
+      child.closes += 1;
+      child.alive = false;
+      closeBegan();
+      await gate;
+    };
+    children.push(child);
+    return child;
+  };
+  const pool = new ChildPool(start, { tokenFor });
+  await pool.read("work");
+  const resetting = pool.resetAccounts();
+  await began;
+  let closed = false;
+  const closing = errorOf(
+    pool.closeAll().finally(() => {
+      closed = true;
+    }),
+  );
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(closed, false, "closeAll must wait for the reset's close that is still held");
+  } finally {
+    release();
+  }
+  assert.equal(await closing, undefined, "closeAll resolves once the close is done");
+  await resetting;
+  assert.equal(children[0].closes, 1, "the reset's child is closed once");
+});
+
+test("a read whose start is still running when resetAccounts runs has its child closed when the start settles", { timeout: 5000 }, async () => {
+  const children: FakeChild[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const start: StartChild = async () => {
+    await gate;
+    const child = new FakeChild();
+    children.push(child);
+    return child;
+  };
+  const pool = new ChildPool(start, { tokenFor });
+  const reading = errorOf(pool.read("work"));
+  // Let the start begin, so that it is still running when the reset runs.
+  await new Promise((resolve) => setImmediate(resolve));
+  const resetting = pool.resetAccounts();
+  let resetDone = false;
+  void resetting.then(() => {
+    resetDone = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(resetDone, false, "the reset waits for the start that is still running");
+  release();
+  await resetting;
+  assert.equal(children.length, 1, "the start produces one child");
+  assert.equal(children[0].closes, 1, "the reset closes that child once the start settles");
+  await reading;
+});
+
 test("childEnv keeps PATH and the token, and drops the other names of the example parent", () => {
   const parent = { PATH: "p", AWS_SECRET_ACCESS_KEY: "x", GITHUB_TOKEN: "y", HOME: "h" };
   assert.deepEqual(definedEntries(childEnv("tok", parent)), { PATH: "p", SUPABASE_ACCESS_TOKEN: "tok" });
