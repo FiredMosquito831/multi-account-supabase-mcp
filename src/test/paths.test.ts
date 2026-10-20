@@ -25,9 +25,10 @@ for (const [platform, home, override] of OVERRIDE_CASES) {
 }
 
 test("win32 with LOCALAPPDATA set uses LOCALAPPDATA", () => {
+  // A value the home folder does not produce, so ignoring LOCALAPPDATA fails this test.
   assert.equal(
-    dataFolder({ LOCALAPPDATA: WIN_LOCAL }, "win32", WIN_HOME),
-    "C:\\Users\\u\\AppData\\Local\\multi-account-supabase-mcp",
+    dataFolder({ LOCALAPPDATA: "D:\\Data\\Local" }, "win32", WIN_HOME),
+    "D:\\Data\\Local\\multi-account-supabase-mcp",
   );
 });
 
