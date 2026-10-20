@@ -6,12 +6,12 @@ import { type CliIo, runCli } from "./run.js";
 import { KeyringTokenStore } from "./secrets/token-store.js";
 import { type FetchLike, fetchProfile } from "./supabase/api.js";
 
-// The identity check is the only network call in the add flow. It is bounded, so a hang cannot stall the add (R21).
+// The identity check is the only network call in the add flow. It is bounded, so a hang cannot stall the add.
 const IDENTITY_CHECK_TIMEOUT_MS = 30_000;
 const boundedFetch: FetchLike = (url, init) =>
   fetch(url, { ...init, signal: AbortSignal.timeout(IDENTITY_CHECK_TIMEOUT_MS) });
 
-// Reads keys until Enter (R41). Nothing is echoed. Backspace removes one character. Ctrl+C rejects with "Cancelled.",
+// Reads keys until Enter. Nothing is echoed. Backspace removes one character. Ctrl+C rejects with "Cancelled.",
 // and so does a closed input, so the add never waits forever.
 const readUntilEnter = (stdin: NodeJS.ReadStream): Promise<string> =>
   new Promise<string>((resolve, reject) => {
@@ -52,7 +52,7 @@ const readUntilEnter = (stdin: NodeJS.ReadStream): Promise<string> =>
     stdin.on("end", onEnd);
   });
 
-// Reads the token with hidden input (R41). Raw mode is on only while the keys are read, and it is restored in a
+// Reads the token with hidden input. Raw mode is on only while the keys are read, and it is restored in a
 // finally, so a failed read leaves the terminal as it was.
 const readSecret = async (): Promise<string> => {
   const stdin = process.stdin;
@@ -68,7 +68,7 @@ const readSecret = async (): Promise<string> => {
   }
 };
 
-// Task 14 replaces this stub with the stdio server (R4). Until then, serve fails with this message.
+// Task 14 replaces this stub with the stdio server. Until then, serve fails with this message.
 const serve = async (): Promise<void> => {
   throw new Error("serve is wired in Task 14.");
 };

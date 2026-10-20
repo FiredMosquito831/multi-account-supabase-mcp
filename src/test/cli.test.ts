@@ -359,3 +359,109 @@ test("add with an invalid name is refused before the token prompt", () =>
     assert.equal(result.prompts, 0);
     assert.equal(session.tokens.size(), 0);
   }));
+
+test("add with a token-shaped name that has a leading space is refused with the note, and the name is printed nowhere", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const result = await session.run(["add", ` ${TOKEN_SHAPED}`, "--pat"], { terminal: true, typed: TYPED });
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err, [`Error: ${TOKEN_NOTE}`]);
+    assert.deepEqual(result.out, []);
+    assert.equal(printed(result).includes(TOKEN_SHAPED), false);
+    assert.equal(result.prompts, 0);
+    assert.equal(session.tokens.size(), 0);
+  }));
+
+test("default and remove with a token-shaped name, plain or with a leading space, print the note and never the name", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    for (const name of [TOKEN_SHAPED, ` ${TOKEN_SHAPED}`]) {
+      for (const command of ["default", "remove"]) {
+        const result = await session.run([command, name]);
+        assert.equal(result.code, 1);
+        assert.deepEqual(result.err, [`Error: No account named "${TOKEN_NOTE}".`]);
+        assert.deepEqual(result.out, []);
+        assert.equal(printed(result).includes(TOKEN_SHAPED), false);
+      }
+    }
+  }));
+
+test("an unknown command with a leading space, or with text before sbp_, prints the note and never the command", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    for (const command of [` ${TOKEN_SHAPED}`, `x${TOKEN_SHAPED}`]) {
+      const result = await session.run([command]);
+      assert.equal(result.code, 2);
+      assert.deepEqual(result.err, [`Unknown command "${TOKEN_NOTE}".`, usageText]);
+      assert.deepEqual(result.out, []);
+      assert.equal(printed(result).includes(TOKEN_SHAPED), false);
+    }
+  }));
+
+test("a removal whose token delete fails after the record is removed prints the remedy line, exits 1, and shows no keyring text", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work"]);
+    session.tokens.delete = async () => {
+      throw new Error("keyring-internal-detail");
+    };
+    const result = await session.run(["remove", "work"]);
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err, [
+      'Error: The account "work" was removed, but its stored token could not be deleted. Run: multi-account-supabase-mcp remove work',
+    ]);
+    assert.deepEqual(result.out, []);
+    assert.equal(printed(result).includes("keyring-internal-detail"), false);
+    assert.deepEqual((await Registry.load(session.file)).names(), []);
+  }));
+
+test("a removal of a token with no record whose delete fails prints the second remedy line, exits 1, and shows no keyring text", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await session.tokens.set("ghost", TYPED);
+    session.tokens.delete = async () => {
+      throw new Error("keyring-internal-detail");
+    };
+    const result = await session.run(["remove", "ghost"]);
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err, [
+      'Error: The stored token for "ghost" could not be deleted. Run: multi-account-supabase-mcp remove ghost',
+    ]);
+    assert.deepEqual(result.out, []);
+    assert.equal(printed(result).includes("keyring-internal-detail"), false);
+  }));
+
+test("a typed token with spaces around it is trimmed before the identity check and before it is stored", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const checked: string[] = [];
+    const result = await session.run(["add", "work", "--pat"], {
+      terminal: true,
+      typed: "  tok-SECRET-123  ",
+      profile: async (token) => {
+        checked.push(token);
+        return WORK_PROFILE;
+      },
+    });
+    assert.equal(result.code, 0);
+    assert.deepEqual(checked, ["tok-SECRET-123"]);
+    assert.equal(await session.tokens.get("work"), "tok-SECRET-123");
+  }));
+
+test("add and default with an extra argument, and add with an unknown option, are usage errors that echo nothing", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const cases = [
+      { argv: ["add", "work", "extra-argument", "--pat"], echoed: "extra-argument" },
+      { argv: ["default", "work", "extra-argument"], echoed: "extra-argument" },
+      { argv: ["add", "work", "--unknown-option", "--pat"], echoed: "--unknown-option" },
+    ];
+    for (const { argv, echoed } of cases) {
+      const result = await session.run(argv, { terminal: true });
+      assert.equal(result.code, 2);
+      assert.deepEqual(result.err, ["Usage error.", usageText]);
+      assert.deepEqual(result.out, []);
+      assert.equal(result.prompts, 0);
+      assert.equal(printed(result).includes(echoed), false);
+    }
+  }));

@@ -20,9 +20,10 @@ export type CliIo = {
   serve: () => Promise<void>;
 };
 
-// A name that starts with sbp_ (in any case) has the shape of a token. The CLI never prints such text (R15, R37).
+// Text that contains sbp_ (in any case) has the shape of a token, and the CLI never prints it. No valid account name
+// has an underscore, so no valid name is refused.
 const TOKEN_NOTE = "That input looks like a token, so it is not repeated.";
-const looksLikeToken = (text: string): boolean => /^sbp_/i.test(text);
+const looksLikeToken = (text: string): boolean => /sbp_/i.test(text);
 const shown = (text: string): string => (looksLikeToken(text) ? TOKEN_NOTE : text);
 
 const NEEDS_PAT = "Adding an account needs --pat. Run in a terminal: multi-account-supabase-mcp add <name> --pat";
@@ -33,7 +34,7 @@ const REDACTED = "[redacted]";
 const redact = (text: string, secrets: readonly string[]): string =>
   secrets.reduce((result, secret) => (secret === "" ? result : result.split(secret).join(REDACTED)), text);
 
-// The one handler for a failed command (R40, R42). It writes "Error: <message>", then the cause's message on the
+// The one handler for a failed command. It writes "Error: <message>", then the cause's message on the
 // next line, indented by two spaces. Both pass through redact. It returns exit code 1.
 const reportError = (io: CliIo, error: unknown, secrets: readonly string[]): number => {
   const message = error instanceof Error ? error.message : String(error);
@@ -44,7 +45,7 @@ const reportError = (io: CliIo, error: unknown, secrets: readonly string[]): num
   return 1;
 };
 
-// A missing or extra argument, or an unknown option. It is a usage error, and it echoes nothing from the input (R43).
+// A missing or extra argument, or an unknown option. It is a usage error, and it echoes nothing from the input.
 const usageError = (io: CliIo): number => {
   io.stderr("Usage error.");
   io.stderr(usageText);
@@ -86,14 +87,15 @@ const addCommand = async (args: string[], io: CliIo): Promise<number> => {
     return 2;
   }
   // The name is checked before the prompt, so a bad name never asks for a token. A token-shaped name gets the note
-  // alone, so the name is not printed (R15, R37).
+  // alone, so the name is not printed.
   if (looksLikeToken(name)) {
     throw new Error(TOKEN_NOTE);
   }
   assertValidName(name);
   // The registry is read before the prompt, so a file that cannot be read is reported before a token is typed.
   const registry = await Registry.load(io.registryFile);
-  const token = await io.readSecret();
+  // Spaces around the typed value are not part of a token, so they are removed before any use.
+  const token = (await io.readSecret()).trim();
   if (token === "") {
     throw new Error("no token was typed.");
   }
@@ -110,10 +112,10 @@ const addCommand = async (args: string[], io: CliIo): Promise<number> => {
       token,
     );
     const isDefault = registry.defaultName() === name ? " It is the default account." : "";
-    io.stdout(`Added "${record.name}" (${record.email}).${isDefault}`);
+    io.stdout(`Added "${shown(record.name)}" (${record.email}).${isDefault}`);
     return 0;
   } catch (error) {
-    // The typed token is removed from the message and the cause before anything is printed (R42).
+    // The typed token is removed from the message and the cause before anything is printed.
     return reportError(io, error, [token]);
   }
 };
@@ -135,18 +137,18 @@ const defaultCommand = async (args: string[], io: CliIo): Promise<number> => {
   }
   const [name] = parsed.positional;
   const registry = await Registry.load(io.registryFile);
-  // Checked here, not by setDefault, because setDefault's message would print the name as it was typed (R37).
+  // Checked here, not by setDefault, because setDefault's message would print the name as it was typed.
   if (registry.get(name) === undefined) {
     throw new Error(`No account named "${shown(name)}".`);
   }
   registry.setDefault(name);
   await registry.save();
-  io.stdout(`Default account: ${name}`);
+  io.stdout(`Default account: ${shown(name)}`);
   return 0;
 };
 
 // remove <name>. It removes the record and the token. A name with no record still has its token removed when one is
-// stored, because the add rollback tells the owner to run this command (R24, R39).
+// stored, because the add rollback tells the owner to run this command.
 const removeCommand = async (args: string[], io: CliIo): Promise<number> => {
   const parsed = parseArgs(args, []);
   if (parsed === undefined || parsed.positional.length !== 1) {
@@ -160,7 +162,18 @@ const removeCommand = async (args: string[], io: CliIo): Promise<number> => {
   } else if ((await io.tokens.get(name)) === undefined) {
     throw new Error(`No account named "${shown(name)}".`);
   }
-  await io.tokens.delete(name);
+  try {
+    await io.tokens.delete(name);
+  } catch {
+    // The keyring's own text is left out. Running remove again finds the token and deletes it.
+    const remedy = `multi-account-supabase-mcp remove ${shown(name)}`;
+    io.stderr(
+      hadRecord
+        ? `Error: The account "${shown(name)}" was removed, but its stored token could not be deleted. Run: ${remedy}`
+        : `Error: The stored token for "${shown(name)}" could not be deleted. Run: ${remedy}`,
+    );
+    return 1;
+  }
   io.stdout(`Removed "${shown(name)}".`);
   return 0;
 };
