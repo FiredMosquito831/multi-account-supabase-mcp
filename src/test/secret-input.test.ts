@@ -59,7 +59,7 @@ const assertLeftClean = (input: FakeInput, output: FakeOutput, startedRaw: boole
   assert.equal(input.listenerCount("error"), 0);
 };
 
-test("a token followed by an arrow key and Enter in one chunk gives the token, without the arrow key", async () => {
+test("a token followed by an arrow key and Enter in one chunk gives the token, without the arrow key", { timeout: 5000 }, async () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   const token = await readWith(input, output, ["tok-SECRET-123\u001b[A\r"]);
@@ -68,7 +68,7 @@ test("a token followed by an arrow key and Enter in one chunk gives the token, w
   assertLeftClean(input, output, false);
 });
 
-test("an arrow key that arrives as its own chunk adds nothing to the token", async () => {
+test("an arrow key that arrives as its own chunk adds nothing to the token", { timeout: 5000 }, async () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   const token = await readWith(input, output, ["tok-SECRET-123", "\u001b[B", "\u001bOD", "\r"]);
@@ -76,7 +76,15 @@ test("an arrow key that arrives as its own chunk adds nothing to the token", asy
   assertLeftClean(input, output, false);
 });
 
-test("Backspace, sent as the delete code or as the backspace code, removes one character each time", async () => {
+test("ESC O followed by Enter, in one chunk, gives the token without an O", { timeout: 5000 }, async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const token = await readWith(input, output, ["tok\u001bO\r"]);
+  assert.equal(token, "tok");
+  assertLeftClean(input, output, false);
+});
+
+test("Backspace, sent as the delete code or as the backspace code, removes one character each time", { timeout: 5000 }, async () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   const token = await readWith(input, output, ["abcd\u007f\b\r"]);
@@ -84,7 +92,7 @@ test("Backspace, sent as the delete code or as the backspace code, removes one c
   assertLeftClean(input, output, false);
 });
 
-test("keys that come after Enter are not read into the token", async () => {
+test("keys that come after Enter are not read into the token", { timeout: 5000 }, async () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   const token = await readWith(input, output, ["tok\r", "not-part-of-it\r"]);
@@ -92,14 +100,14 @@ test("keys that come after Enter are not read into the token", async () => {
   assertLeftClean(input, output, false);
 });
 
-test("Ctrl+C rejects with Cancelled and returns no token", async () => {
+test("Ctrl+C rejects with Cancelled and returns no token", { timeout: 5000 }, async () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   await assert.rejects(readWith(input, output, ["tok-SECRET", "\u0003"]), { message: "Cancelled." });
   assertLeftClean(input, output, false);
 });
 
-test("the end of the input rejects with Cancelled", async () => {
+test("the end of the input rejects with Cancelled", { timeout: 5000 }, async () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   const pending = readSecretFrom(input, output);
@@ -109,7 +117,7 @@ test("the end of the input rejects with Cancelled", async () => {
   assertLeftClean(input, output, false);
 });
 
-test("an input error rejects with the fixed message, and the error's own text is not passed on", async () => {
+test("an input error rejects with the fixed message, and the error's own text is not passed on", { timeout: 5000 }, async () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   const pending = readSecretFrom(input, output);
@@ -118,7 +126,7 @@ test("an input error rejects with the fixed message, and the error's own text is
   assertLeftClean(input, output, false);
 });
 
-test("raw mode is restored to the value it had before the read, so a stream that started raw stays raw", async () => {
+test("raw mode is restored to the value it had before the read, so a stream that started raw stays raw", { timeout: 5000 }, async () => {
   const input = new FakeInput();
   input.isRaw = true;
   const output = new FakeOutput();
@@ -128,7 +136,7 @@ test("raw mode is restored to the value it had before the read, so a stream that
   assertLeftClean(input, output, true);
 });
 
-test("a terminal that refuses raw mode rejects with the fixed message, and the input is left as it was", async () => {
+test("a terminal that refuses raw mode rejects with the fixed message, and the input is left as it was", { timeout: 5000 }, async () => {
   const input = new FakeInput();
   input.setRawMode = () => {
     throw new Error("raw mode refused by the device");
@@ -138,7 +146,7 @@ test("a terminal that refuses raw mode rejects with the fixed message, and the i
   assertLeftClean(input, output, false);
 });
 
-test("an input that is not a terminal is refused before any key is read", async () => {
+test("an input that is not a terminal is refused before any key is read", { timeout: 5000 }, async () => {
   const input = new FakeInput();
   input.isTTY = false;
   const output = new FakeOutput();

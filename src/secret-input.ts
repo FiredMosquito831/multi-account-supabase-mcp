@@ -5,7 +5,8 @@ const CANCELLED = "Cancelled.";
 const COULD_NOT_READ = "Could not read the token.";
 
 // An escape sequence, such as an arrow key, or a lone escape. It is removed from each chunk before the keys are read.
-const ESCAPE_SEQUENCE = /\u001b(?:\[[0-?]*[ -\/]*[@-~]|O.)?/g;
+// After an O, one key is taken unless it is a carriage return or a line feed, so an Enter that follows is still read.
+const ESCAPE_SEQUENCE = /\u001b(?:\[[0-?]*[ -\/]*[@-~]|O[^\r\n]?)?/g;
 
 type SecretEvent = "data" | "end" | "error";
 

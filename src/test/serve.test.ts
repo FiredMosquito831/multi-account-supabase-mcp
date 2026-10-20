@@ -130,6 +130,9 @@ const CATALOG: OfficialTool[] = [
   { name: "future_tool", description: "A tool the policy table does not name.", inputSchema: { type: "object", properties: {} } },
 ];
 
+// The same list without the tool that the policy table does not name, so a read shows that the tool is unknown.
+const CATALOG_WITHOUT_UNCLASSIFIED = CATALOG.filter((tool) => tool.name !== "future_tool");
+
 test("tools/list over the in-memory transport lists account_list and the catalog, and gives account to each catalog tool but search_docs", () =>
   withRegistry(["work", "personal"], "work", async (registry) => {
     let starts = 0;
@@ -172,17 +175,22 @@ test("tools/list over the in-memory transport lists account_list and the catalog
     }
   }));
 
-test("a tool the policy does not name counts as a change: all and a list are refused over the protocol, and no child starts", () =>
+test("a tool the policy does not name counts as a change: all and a list are refused over the protocol, and no catalog or account child starts", () =>
   withRegistry(["work", "personal"], "work", async (registry) => {
-    let starts = 0;
+    let accountStarts = 0;
+    let catalogStarts = 0;
     const start: StartChild = async () => {
-      starts += 1;
+      accountStarts += 1;
       throw new Error("no child may start in this test");
     };
     const deps: CallDeps = {
       registry: async () => registry,
       pool: new ChildPool(start, { tokenFor: async () => "unused" }),
-      catalog: async () => CATALOG,
+      // Each read of this stub is a catalog start. Its list does not hold the unclassified tool.
+      catalog: async () => {
+        catalogStarts += 1;
+        return CATALOG_WITHOUT_UNCLASSIFIED;
+      },
     };
     const server = createServer(deps);
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -199,7 +207,8 @@ test("a tool the policy does not name counts as a change: all and a list are ref
           account,
         );
       }
-      assert.equal(starts, 0, "no child starts");
+      assert.equal(catalogStarts, 0, "a refused change reads no catalog, so no catalog start happens");
+      assert.equal(accountStarts, 0, "a refused change starts no account child");
     } finally {
       await client.close();
       await server.close();

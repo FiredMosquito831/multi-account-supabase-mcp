@@ -1,7 +1,7 @@
 export type Mode = "none" | "all" | "locate" | "one";
 
 // A Map, not an object literal. Names inherited from Object.prototype (constructor, toString, __proto__)
-// are not keys of a Map, so modeOf gives them "one". The Netlify template had this defect with an object literal.
+// are not keys of a Map, so modeOf gives them "one".
 export const OPERATION_MODES: ReadonlyMap<string, Mode> = new Map<string, Mode>([
   ["search_docs", "none"],
   ["list_organizations", "all"],

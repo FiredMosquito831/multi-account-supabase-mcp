@@ -61,12 +61,17 @@ export const addAccount = async (
       await tokens.delete(name);
     } catch {
       // The warning holds the account name only, never the token or the error text. If warn throws, the same
-      // message goes to stderr, so the failed removal is still reported. The original error is thrown either way.
+      // message goes to stderr, so the failed removal is still reported unless stderr fails too. The original error is
+      // thrown either way.
       const message = `The token for ${name} could not be removed after a failed save. Remove it with: multi-account-supabase-mcp remove ${name}`;
       try {
         warn(message);
       } catch {
-        writeToStderr(message);
+        try {
+          writeToStderr(message);
+        } catch {
+          // Nothing is left to report the message with. The original error is still thrown below.
+        }
       }
     }
     throw error;

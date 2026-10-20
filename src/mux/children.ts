@@ -29,6 +29,11 @@ const NO_ANSWER_MESSAGE = "Supabase did not answer in time (limit: 15 minutes)."
 // The text of a call that arrives after closeAll. No child is started for it.
 const SHUTTING_DOWN_MESSAGE = "The server is shutting down, so no child is started.";
 
+// The texts of a catalog start and a placeholder start that fail. Each one names no account.
+const CATALOG_START_FAILED = "The Supabase server for the catalog did not start. Check that the network is reachable.";
+const PLACEHOLDER_START_FAILED =
+  "The Supabase server for search_docs did not start. Check that the network is reachable.";
+
 export type OfficialTool = {
   name: string;
   description?: string;
@@ -131,7 +136,9 @@ export class ChildPool {
   // The placeholder child serves only search_docs, a read, so it is read-only. The catalog child is not, so that its
   // list holds every tool.
   placeholder(): Promise<ChildClient> {
-    return this.ensure("placeholder", () => this.start({ account: null, readOnly: true, token: PLACEHOLDER_TOKEN }));
+    return this.ensure("placeholder", () =>
+      this.startOrFail({ account: null, readOnly: true, token: PLACEHOLDER_TOKEN }, PLACEHOLDER_START_FAILED),
+    );
   }
 
   // Starts a child for the catalog, lists its tools and closes it, also when the listing fails. A close error is not
@@ -139,7 +146,10 @@ export class ChildPool {
   // does not close it again.
   async catalog(): Promise<OfficialTool[]> {
     this.refuseWhenClosed();
-    const starting = this.start({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN });
+    const starting = this.startOrFail(
+      { account: null, readOnly: false, token: PLACEHOLDER_TOKEN },
+      CATALOG_START_FAILED,
+    );
     this.catalogStarts.add(starting);
     let child: ChildClient;
     try {
@@ -162,8 +172,10 @@ export class ChildPool {
 
   // Closes the pool. The flag is set first, so no call starts a child from now on. Every start in the map, and every
   // catalog start still in its set, is taken out and closed here, including a start that is still pending. closeAll
-  // also waits for the closes that are still running. It waits for every close, then throws the first close error, if
-  // there was one. A child that a catalog call or a timed-out call closes itself is waited for here too.
+  // also waits for the closes that are still running, the ones that a catalog call or a timed-out call started. It
+  // throws the first error among the closes that it takes itself, that is, the map entries and the catalog starts it
+  // holds. The errors of the closes that catalog() and a timed-out call start are not reported, because their callers
+  // already have a result.
   async closeAll(): Promise<void> {
     this.closed = true;
     const opened = [...this.children.values(), ...this.catalogStarts];
@@ -199,6 +211,16 @@ export class ChildPool {
       throw new Error(
         `The server for account "${account}" did not start. Check that its token is still valid and that the network is reachable.`,
       );
+    }
+  }
+
+  // Starts a child for the catalog or the placeholder. A failed start gives the given text, with no cause, because the
+  // start's own error is not reviewed for token content.
+  private async startOrFail(spec: ChildSpec, failedText: string): Promise<ChildClient> {
+    try {
+      return await this.start(spec);
+    } catch {
+      throw new Error(failedText);
     }
   }
 
@@ -245,11 +267,14 @@ export class ChildPool {
     }
   }
 
-  // Removes the entry of a child whose call timed out. An entry that was already replaced is left in place.
-  private forget(key: string, entry: { start?: Promise<ChildClient> }): void {
-    if (this.children.get(key) === entry.start) {
-      this.children.delete(key);
+  // Removes the entry of a child whose call timed out. It returns true when this call removed the entry, and false when
+  // the entry was already gone, because closeAll took it or a later start replaced it.
+  private forget(key: string, entry: { start?: Promise<ChildClient> }): boolean {
+    if (this.children.get(key) !== entry.start) {
+      return false;
     }
+    this.children.delete(key);
+    return true;
   }
 
   // Closes a child, and keeps the close in pendingCloses until it settles, so closeAll waits for it.
@@ -266,16 +291,19 @@ export class ChildPool {
   // The child that callers get. Its callTool is limited by the pool's own timer as well as by the SDK's timeout.
   // The child gets the smaller of the caller's timeout and the pool's limit, so the SDK's timeout never fires first.
   // When the pool's timer wins, leave takes the child out of the pool, and the child is closed without waiting for the
-  // close, but closeAll still waits for that close. The caller gets the timeout error at once.
-  private wrap(child: ChildClient, leave: () => void): ChildClient {
+  // close, but closeAll still waits for that close. The caller gets the timeout error at once. A child whose entry is
+  // already gone is not closed here: closeAll closes the children it took, and a later start replaces only a child that
+  // reported that it was not alive.
+  private wrap(child: ChildClient, leave: () => boolean): ChildClient {
     return {
       listTools: () => child.listTools(),
       callTool: (name, args, timeoutMs) => {
         const limit = Math.min(timeoutMs, this.toolTimeoutMs);
         return withLimit(() => child.callTool(name, args, limit), limit, () => {
-          leave();
-          // The close is tracked, so closeAll waits for it. The caller already has the timeout error.
-          void this.closeTracked(child);
+          if (leave()) {
+            // The close is tracked, so closeAll waits for it. The caller already has the timeout error.
+            void this.closeTracked(child);
+          }
         });
       },
       isAlive: () => child.isAlive(),

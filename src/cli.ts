@@ -5,7 +5,7 @@ import { Registry } from "./accounts/registry.js";
 import { dataFolder } from "./paths.js";
 import { type CliIo, runCli } from "./run.js";
 import { readSecretFrom } from "./secret-input.js";
-import { KeyringTokenStore, type TokenStore } from "./secrets/token-store.js";
+import type { TokenStore } from "./secrets/token-store.js";
 import { type FetchLike, fetchProfile } from "./supabase/api.js";
 
 // The identity check is the only network call in the add flow. It is bounded, so a hang cannot stall the add.
@@ -29,11 +29,14 @@ const serveFromRegistryFile = async (registryFile: string, tokens: TokenStore): 
   await serveStdio(buildCallDeps({ registry, tokens }));
 };
 
-// Builds the real streams and stores, then runs the command. In serve mode stdout carries the protocol, so every log
-// goes to stderr. The exit code is set, not forced, so a running server keeps the process alive. A failure during setup
-// prints its message with the Error prefix and exits with 1, so no stack trace is shown.
+// Builds the real streams and stores, then runs the command. The token store is loaded inside the try, as the server
+// is, so a failure to load it prints its message with the Error prefix and exits with 1, and no stack trace is shown.
+// The imports at the top of this file load before main runs, and a failure in those is not covered. In serve mode
+// stdout carries the protocol, so every log goes to stderr. The exit code is set, not forced, so a running server keeps
+// the process alive.
 const main = async (): Promise<void> => {
   try {
+    const { KeyringTokenStore } = await import("./secrets/token-store.js");
     const registryFile = path.join(dataFolder(process.env, process.platform, os.homedir()), "accounts.json");
     const tokens = new KeyringTokenStore();
     const io: CliIo = {

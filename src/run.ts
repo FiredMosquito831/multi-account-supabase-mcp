@@ -103,6 +103,7 @@ const addCommand = async (args: string[], io: CliIo): Promise<number> => {
   if (token === "") {
     throw new Error("no token was typed.");
   }
+  let summary: string;
   try {
     const record = await addAccount(
       {
@@ -116,12 +117,14 @@ const addCommand = async (args: string[], io: CliIo): Promise<number> => {
       token,
     );
     const isDefault = registry.defaultName() === name ? " It is the default account." : "";
-    io.stdout(`Added "${shown(record.name)}" (${record.email}).${isDefault}`);
-    return 0;
+    summary = `Added "${shown(record.name)}" (${record.email}).${isDefault}`;
   } catch (error) {
     // The typed token is removed from the message and the cause before anything is printed.
     return reportError(io, error, [token]);
   }
+  // The summary is printed after the try block, once the account is saved.
+  io.stdout(summary);
+  return 0;
 };
 
 // list. The text never holds a token.

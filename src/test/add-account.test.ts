@@ -223,6 +223,41 @@ test("a warning that throws does not replace the save error, and the failed remo
     }
   }));
 
+test("a warning and a stderr write that both throw still reject with the save error", () =>
+  inTempFolder(async (folder) => {
+    const registry = await Registry.load(path.join(folder, "accounts.json"));
+    const saveError = new Error("The save failed.");
+    registry.save = async () => {
+      throw saveError;
+    };
+    const tokens = new MemoryTokenStore();
+    tokens.delete = async () => {
+      throw new Error("The credential store refused the removal.");
+    };
+    // Both writers fail, so the failed removal is reported nowhere. The thrown error must still be the save error.
+    const stderr = mock.method(process.stderr, "write", () => {
+      throw new Error("The stderr write failed.");
+    });
+    try {
+      await assert.rejects(
+        addAccount(
+          {
+            ...depsFor(registry, tokens, async () => profileOf("gotrue-work", "work@example.com")),
+            warn: () => {
+              throw new Error("The warning failed.");
+            },
+          },
+          "work",
+          FAKE_TOKEN,
+        ),
+        (error: unknown) => error === saveError,
+      );
+      assert.equal(stderr.mock.callCount(), 1, "the stderr writer was tried once");
+    } finally {
+      stderr.mock.restore();
+    }
+  }));
+
 test("a name that breaks the name rules is refused before the identity check, and stores no token", () =>
   inTempFolder(async (folder) => {
     const registry = await Registry.load(path.join(folder, "accounts.json"));

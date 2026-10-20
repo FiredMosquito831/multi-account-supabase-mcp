@@ -250,6 +250,40 @@ test("a start that fails names the account, and the message has neither the orig
   assert.equal(Object.hasOwn(error, "cause"), false, "the original error must not be attached as a cause");
 });
 
+test("a catalog start that fails gives the fixed text, which names no account, and carries no cause", async () => {
+  const pool = new ChildPool(
+    async () => {
+      throw new Error("connect failed with token-value-for-catalog");
+    },
+    { tokenFor },
+  );
+  const error = await errorOf(pool.catalog());
+  assert.ok(error instanceof Error, "the call must reject with an Error");
+  assert.equal(
+    error.message,
+    "The Supabase server for the catalog did not start. Check that the network is reachable.",
+  );
+  assert.equal(error.message.includes("token-value"), false, "the message must not contain the original text");
+  assert.equal(Object.hasOwn(error, "cause"), false, "the original error must not be attached as a cause");
+});
+
+test("a placeholder start that fails gives the fixed text, which names no account, and carries no cause", async () => {
+  const pool = new ChildPool(
+    async () => {
+      throw new Error("connect failed with token-value-for-search");
+    },
+    { tokenFor },
+  );
+  const error = await errorOf(pool.placeholder());
+  assert.ok(error instanceof Error, "the call must reject with an Error");
+  assert.equal(
+    error.message,
+    "The Supabase server for search_docs did not start. Check that the network is reachable.",
+  );
+  assert.equal(error.message.includes("token-value"), false, "the message must not contain the original text");
+  assert.equal(Object.hasOwn(error, "cause"), false, "the original error must not be attached as a cause");
+});
+
 test("closeAll closes every child the pool started", async () => {
   const fake = fakeStart();
   const pool = new ChildPool(fake.start, { tokenFor });
@@ -274,8 +308,14 @@ test("closeAll waits for every close, and then rejects with the first close erro
     child.close = async () => {
       child.closes += 1;
       child.alive = false;
-      if (spec.account === "failing") {
+      if (spec.account === "first") {
+        // The first child of the list fails only after the gate opens, so its failure comes after the second one's.
+        await gate;
         throw new Error("the first close failed");
+      }
+      if (spec.account === "second") {
+        // The second child fails at once, so its failure comes before the first child's failure in time.
+        throw new Error("the second close failed");
       }
       await gate;
     };
@@ -283,7 +323,8 @@ test("closeAll waits for every close, and then rejects with the first close erro
     return child;
   };
   const pool = new ChildPool(start, { tokenFor });
-  await pool.read("failing");
+  await pool.read("first");
+  await pool.read("second");
   await pool.read("slow");
   let closed = false;
   const closing = errorOf(
@@ -298,10 +339,14 @@ test("closeAll waits for every close, and then rejects with the first close erro
     release();
   }
   const error = await closing;
-  assert.equal(error instanceof Error ? error.message : undefined, "the first close failed");
+  assert.equal(
+    error instanceof Error ? error.message : undefined,
+    "the first close failed",
+    "the error must be the first failure in the list, not the first to fail in time",
+  );
   assert.deepEqual(
     children.map((child) => child.closes),
-    [1, 1],
+    [1, 1, 1],
   );
 });
 
@@ -475,7 +520,7 @@ test("closeAll closes a catalog child that is still listing, and does not wait f
   assert.equal(children[0].closes, 1, "catalog must not close the child a second time");
 });
 
-test("closeAll waits for a catalog close that is still running, and closes that child once", async () => {
+test("closeAll waits for a catalog close that is still running, and closes that child once", { timeout: 5000 }, async () => {
   const children: FakeChild[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -516,7 +561,7 @@ test("closeAll waits for a catalog close that is still running, and closes that 
   assert.equal(children[0].closes, 1, "the catalog child must be closed once");
 });
 
-test("closeAll waits for the close that a timed-out call started, and closes that child once", async () => {
+test("closeAll waits for the close that a timed-out call started, and closes that child once", { timeout: 5000 }, async () => {
   const children: FakeChild[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -561,6 +606,22 @@ test("closeAll waits for the close that a timed-out call started, and closes tha
   }
   assert.equal(await closing, undefined, "closeAll must resolve once the close is done");
   assert.equal(children[0].closes, 1, "the timed-out child must be closed once");
+});
+
+test("a call that times out after closeAll took its child does not close that child again", { timeout: 5000 }, async () => {
+  const fake = fakeStart();
+  const pool = new ChildPool(fake.start, { toolTimeoutMs: 20, tokenFor });
+  const child = await pool.read("work");
+  const timingOut = errorOf(child.callTool("execute_sql", {}, TOOL_TIMEOUT_MS));
+  // The 20 millisecond limit has not ended the call yet, so closeAll takes the child first, and closes it.
+  await pool.closeAll();
+  assert.equal(fake.children[0].closes, 1, "closeAll closes the child it took");
+  const timeoutError = await timingOut;
+  assert.equal(
+    timeoutError instanceof Error ? timeoutError.message : undefined,
+    "Supabase did not answer in time (limit: 15 minutes).",
+  );
+  assert.equal(fake.children[0].closes, 1, "the timed-out call must not close the child a second time");
 });
 
 test("childEnv keeps PATH and the token, and drops the other names of the example parent", () => {
