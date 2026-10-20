@@ -446,6 +446,9 @@ test("a typed token with spaces around it is trimmed before the identity check a
     assert.equal(result.code, 0);
     assert.deepEqual(checked, ["tok-SECRET-123"]);
     assert.equal(await session.tokens.get("work"), "tok-SECRET-123");
+    assert.deepEqual(result.out, ['Added "work" (a@example.com). It is the default account.']);
+    assert.deepEqual(result.err, []);
+    assert.equal(printed(result).includes("  tok-SECRET-123  "), false);
   }));
 
 test("add and default with an extra argument, and add with an unknown option, are usage errors that echo nothing", () =>
@@ -464,4 +467,28 @@ test("add and default with an extra argument, and add with an unknown option, ar
       assert.equal(result.prompts, 0);
       assert.equal(printed(result).includes(echoed), false);
     }
+  }));
+
+test("remove of a token-shaped name, plain or with a leading space, exits 1 and leaves a token stored under it alone", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await session.tokens.set(TOKEN_SHAPED, TYPED);
+    for (const name of [` ${TOKEN_SHAPED}`, TOKEN_SHAPED]) {
+      const result = await session.run(["remove", name]);
+      assert.equal(result.code, 1);
+      assert.deepEqual(result.err, [`Error: No account named "${TOKEN_NOTE}".`]);
+      assert.deepEqual(result.out, []);
+      assert.equal(printed(result).includes(TOKEN_SHAPED), false);
+      assert.equal(await session.tokens.get(TOKEN_SHAPED), TYPED);
+    }
+  }));
+
+test("add with three spaces as the typed token prints the no-token error, exits 1, and calls no profile function", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const result = await session.run(["add", "work", "--pat"], { terminal: true, typed: "   " });
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err, ["Error: no token was typed."]);
+    assert.equal(result.profileCalls, 0);
+    assert.equal(session.tokens.size(), 0);
   }));

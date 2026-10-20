@@ -155,6 +155,10 @@ const removeCommand = async (args: string[], io: CliIo): Promise<number> => {
     return usageError(io);
   }
   const [name] = parsed.positional;
+  // A token-shaped name names no account, so nothing stored under it is read or deleted.
+  if (looksLikeToken(name)) {
+    throw new Error(`No account named "${shown(name)}".`);
+  }
   const registry = await Registry.load(io.registryFile);
   const hadRecord = registry.remove(name) !== undefined;
   if (hadRecord) {
