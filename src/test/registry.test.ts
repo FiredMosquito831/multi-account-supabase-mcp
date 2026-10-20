@@ -26,8 +26,9 @@ const record = (name: string, gotrueId = `gotrue-${name}`): AccountRecord => ({
   addedAt: ADDED_AT,
 });
 
-const corruptMessage = (file: string): string =>
-  `accounts.json cannot be read, so it was not changed: ${file}`;
+// The one message for a file that cannot be read or has the wrong shape. The reason is in parentheses.
+const corruptMessage = (file: string, reason: string): string =>
+  `accounts.json cannot be read, so it was not changed: ${file} (${reason})`;
 
 test("the first add makes that account the default, and a second add keeps it", () =>
   inTempFolder(async (folder) => {
@@ -156,36 +157,45 @@ test("save leaves no temporary file behind", () =>
     assert.deepEqual(await readdir(folder), ["accounts.json"]);
   }));
 
-const corruptFiles: [string, string][] = [
-  ["text that is not JSON", "{ not json"],
-  ["an empty file", ""],
-  ["JSON without an accounts array", '{"default": null}'],
-  ["an accounts value that is not an array", '{"default": null, "accounts": {}}'],
-  ["a top-level array", "[]"],
-  ["a top-level null", "null"],
-  ["no default key", JSON.stringify({ accounts: [record("work")] })],
+// Each case has the reason that load gives for it: the text is not JSON, or the JSON has the wrong shape.
+const corruptFiles: [string, string, string][] = [
+  ["text that is not JSON", "{ not json", "not valid JSON"],
+  ["an empty file", "", "not valid JSON"],
+  ["JSON without an accounts array", '{"default": null}', "unexpected contents"],
+  ["an accounts value that is not an array", '{"default": null, "accounts": {}}', "unexpected contents"],
+  ["a top-level array", "[]", "unexpected contents"],
+  ["a top-level null", "null", "unexpected contents"],
+  ["no default key", JSON.stringify({ accounts: [record("work")] }), "unexpected contents"],
   [
     "a record without gotrueId",
     JSON.stringify({
       default: null,
       accounts: [{ name: "work", email: "work@example.com", added: "pat", addedAt: ADDED_AT }],
     }),
+    "unexpected contents",
   ],
   [
     'a record whose added is not "pat"',
     JSON.stringify({ default: null, accounts: [{ ...record("work"), added: "oauth" }] }),
+    "unexpected contents",
   ],
   [
     "a record with an empty email",
     JSON.stringify({ default: null, accounts: [{ ...record("work"), email: "" }] }),
+    "unexpected contents",
   ],
-  ["a record named all", JSON.stringify({ default: null, accounts: [record("all")] })],
+  [
+    "a record named all",
+    JSON.stringify({ default: null, accounts: [record("all")] }),
+    "unexpected contents",
+  ],
   [
     "two accounts with one name",
     JSON.stringify({
       default: null,
       accounts: [record("work", "gotrue-1"), record("work", "gotrue-2")],
     }),
+    "unexpected contents",
   ],
   [
     "two accounts for one Supabase user",
@@ -193,24 +203,41 @@ const corruptFiles: [string, string][] = [
       default: null,
       accounts: [record("work", "gotrue-1"), record("play", "gotrue-1")],
     }),
+    "unexpected contents",
   ],
   [
     "a default that names no account",
     JSON.stringify({ default: "ghost", accounts: [record("work")] }),
+    "unexpected contents",
   ],
 ];
 
-for (const [label, text] of corruptFiles) {
+for (const [label, text, reason] of corruptFiles) {
   test(`load refuses ${label}, and leaves the file bytes unchanged`, () =>
     inTempFolder(async (folder) => {
       const file = path.join(folder, "accounts.json");
       await writeFile(file, text);
       const before = await readFile(file);
-      await assert.rejects(Registry.load(file), { message: corruptMessage(file) });
+      await assert.rejects(Registry.load(file), { message: corruptMessage(file, reason) });
       assert.deepEqual(await readFile(file), before);
       assert.deepEqual(await readdir(folder), ["accounts.json"]);
     }));
 }
+
+test("a file that holds sbp_TESTVALUE and is not valid JSON is refused, and its message names the path and the reason, not the text", () =>
+  inTempFolder(async (folder) => {
+    const file = path.join(folder, "accounts.json");
+    await writeFile(file, "sbp_TESTVALUE");
+    await assert.rejects(Registry.load(file), (error: unknown) => {
+      const message = (error as Error).message;
+      assert.equal(message.includes(file), true);
+      assert.equal(message.includes("not valid JSON"), true);
+      assert.equal(message.includes("sbp_"), false);
+      // The parser's own error can quote the text, so the error keeps no cause.
+      assert.equal((error as Error).cause, undefined);
+      return true;
+    });
+  }));
 
 test("load of a missing file returns an empty registry and creates no file", () =>
   inTempFolder(async (folder) => {

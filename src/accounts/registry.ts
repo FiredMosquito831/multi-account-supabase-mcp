@@ -45,9 +45,8 @@ const toRecord = (value: unknown): AccountRecord => {
   };
 };
 
-// Checks the whole file before anything is kept. Any wrong shape throws, and load turns that into one message.
-const parseFile = (text: string): FileContents => {
-  const data: unknown = JSON.parse(text);
+// Checks the whole parsed file before anything is kept. Any wrong shape throws, and load turns that into one fixed reason.
+const checkContents = (data: unknown): FileContents => {
   if (typeof data !== "object" || data === null || Array.isArray(data)) {
     throw new Error("The file does not hold a JSON object.");
   }
@@ -72,9 +71,16 @@ const parseFile = (text: string): FileContents => {
   return { default: defaultName, accounts };
 };
 
-// The one message for a file that cannot be read or has the wrong shape. The cause keeps the detail.
-const corrupt = (file: string, cause: unknown): Error =>
-  new Error(`accounts.json cannot be read, so it was not changed: ${file}`, { cause });
+// The one message for a file that cannot be read or has the wrong shape. The reason is a system error code or a fixed
+// phrase. The file's text never reaches the message, and no cause is kept, because a parser error can quote the text.
+const corrupt = (file: string, reason: string): Error =>
+  new Error(`accounts.json cannot be read, so it was not changed: ${file} (${reason})`);
+
+// The reason for a file that cannot be read: the system error code (for example EACCES), or a fixed phrase without one.
+const readReason = (error: unknown): string => {
+  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" ? code : "read failed";
+};
 
 // Callers get copies, so they can change the registry only through add, remove and setDefault.
 const copyOf = (account: AccountRecord | undefined): AccountRecord | undefined =>
@@ -97,14 +103,21 @@ export class Registry {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return new Registry(file, null, []);
       }
-      throw corrupt(file, error);
+      throw corrupt(file, readReason(error));
     }
+    let data: unknown;
     try {
-      const contents = parseFile(text);
-      return new Registry(file, contents.default, contents.accounts);
-    } catch (error) {
-      throw corrupt(file, error);
+      data = JSON.parse(text);
+    } catch {
+      throw corrupt(file, "not valid JSON");
     }
+    let contents: FileContents;
+    try {
+      contents = checkContents(data);
+    } catch {
+      throw corrupt(file, "unexpected contents");
+    }
+    return new Registry(file, contents.default, contents.accounts);
   }
 
   list(): AccountRecord[] {

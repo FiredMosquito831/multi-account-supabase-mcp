@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { type AccountRecord, Registry } from "../accounts/registry.js";
@@ -112,6 +112,8 @@ const sessionIn = (folder: string) => {
 
 // Everything one command printed, on either stream.
 const printed = (result: Result): string => [...result.out, ...result.err].join("\n");
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const recordOf = (name: string): AccountRecord => ({
   name,
@@ -242,19 +244,19 @@ test("add with a token-shaped name is refused with the note before the prompt, t
   inTempFolder(async (folder) => {
     const session = sessionIn(folder);
     const result = await session.run(["add", TOKEN_SHAPED, "--pat"], { terminal: true, typed: TYPED });
-    assert.equal(result.code, 1);
-    assert.deepEqual(result.err, [`Error: ${TOKEN_NOTE}`]);
+    assert.equal(result.code, 2);
+    assert.deepEqual(result.err, [TOKEN_NOTE]);
     assert.deepEqual(result.out, []);
     assert.equal(result.prompts, 0);
     assert.equal(printed(result).includes(TOKEN_SHAPED), false);
     assert.equal(session.tokens.size(), 0);
   }));
 
-test("an unknown command that starts with sbp_ prints the note in place of the command", () =>
+test("an unknown command that starts with sbp_ prints the note alone, in place of the command and the usage text", () =>
   inTempFolder(async (folder) => {
     const result = await sessionIn(folder).run([TOKEN_SHAPED]);
     assert.equal(result.code, 2);
-    assert.deepEqual(result.err, [`Unknown command "${TOKEN_NOTE}".`, usageText]);
+    assert.deepEqual(result.err, [TOKEN_NOTE]);
     assert.equal(printed(result).includes(TOKEN_SHAPED), false);
     assert.deepEqual(result.out, []);
   }));
@@ -369,35 +371,50 @@ test("add with a token-shaped name that has a leading space is refused with the 
   inTempFolder(async (folder) => {
     const session = sessionIn(folder);
     const result = await session.run(["add", ` ${TOKEN_SHAPED}`, "--pat"], { terminal: true, typed: TYPED });
-    assert.equal(result.code, 1);
-    assert.deepEqual(result.err, [`Error: ${TOKEN_NOTE}`]);
+    assert.equal(result.code, 2);
+    assert.deepEqual(result.err, [TOKEN_NOTE]);
     assert.deepEqual(result.out, []);
     assert.equal(printed(result).includes(TOKEN_SHAPED), false);
     assert.equal(result.prompts, 0);
     assert.equal(session.tokens.size(), 0);
   }));
 
-test("default and remove with a token-shaped name, plain or with a leading space, print the note and never the name", () =>
+test("default and remove with a token-shaped name, plain or with a leading space, print the note alone and never the name", () =>
   inTempFolder(async (folder) => {
     const session = sessionIn(folder);
     for (const name of [TOKEN_SHAPED, ` ${TOKEN_SHAPED}`]) {
       for (const command of ["default", "remove"]) {
         const result = await session.run([command, name]);
-        assert.equal(result.code, 1);
-        assert.deepEqual(result.err, [`Error: No account named "${TOKEN_NOTE}".`]);
+        assert.equal(result.code, 2);
+        assert.deepEqual(result.err, [TOKEN_NOTE]);
         assert.deepEqual(result.out, []);
         assert.equal(printed(result).includes(TOKEN_SHAPED), false);
       }
     }
   }));
 
-test("an unknown command with a leading space, or with text before sbp_, prints the note and never the command", () =>
+test("default and remove with a token-shaped name refuse before the registry is read, so a damaged file gets no error line", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await writeFile(session.file, "{ not json");
+    for (const command of ["default", "remove"]) {
+      const result = await session.run([command, TOKEN_SHAPED]);
+      assert.equal(result.code, 2);
+      assert.deepEqual(result.err, [TOKEN_NOTE]);
+      assert.deepEqual(result.out, []);
+    }
+    // The damaged file is still there and unchanged, and the token store was not touched.
+    assert.equal(await readFile(session.file, "utf8"), "{ not json");
+    assert.equal(session.tokens.calls.get + session.tokens.calls.delete, 0);
+  }));
+
+test("an unknown command with a leading space, or with text before sbp_, prints the note alone and never the command", () =>
   inTempFolder(async (folder) => {
     const session = sessionIn(folder);
     for (const command of [` ${TOKEN_SHAPED}`, `x${TOKEN_SHAPED}`]) {
       const result = await session.run([command]);
       assert.equal(result.code, 2);
-      assert.deepEqual(result.err, [`Unknown command "${TOKEN_NOTE}".`, usageText]);
+      assert.deepEqual(result.err, [TOKEN_NOTE]);
       assert.deepEqual(result.out, []);
       assert.equal(printed(result).includes(TOKEN_SHAPED), false);
     }
@@ -474,14 +491,14 @@ test("add and default with an extra argument, and add with an unknown option, ar
     }
   }));
 
-test("remove of a token-shaped name, plain or with a leading space, exits 1 and leaves a token stored under it alone", () =>
+test("remove of a token-shaped name, plain or with a leading space, exits 2 with the note alone, and leaves a token stored under it alone", () =>
   inTempFolder(async (folder) => {
     const session = sessionIn(folder);
     await session.tokens.set(TOKEN_SHAPED, TYPED);
     for (const name of [` ${TOKEN_SHAPED}`, TOKEN_SHAPED]) {
       const result = await session.run(["remove", name]);
-      assert.equal(result.code, 1);
-      assert.deepEqual(result.err, [`Error: No account named "${TOKEN_NOTE}".`]);
+      assert.equal(result.code, 2);
+      assert.deepEqual(result.err, [TOKEN_NOTE]);
       assert.deepEqual(result.out, []);
       assert.equal(printed(result).includes(TOKEN_SHAPED), false);
     }
@@ -514,6 +531,28 @@ test("add of a name that already exists is refused before the token prompt, with
     assert.equal(result.prompts, 0);
     assert.equal(result.profileCalls, 0);
     assert.equal(session.tokens.size(), 0);
+  }));
+
+test("two adds of one name at the same time: one is added, the other is refused as taken, and the file lists one record", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    // The identity check answers after 50 ms, so the second add is still waiting for the lock when the first one saves.
+    const slowProfile = async (): Promise<Profile> => {
+      await delay(50);
+      return WORK_PROFILE;
+    };
+    const results = await Promise.all([
+      session.run(["add", "work", "--pat"], { terminal: true, typed: TYPED, profile: slowProfile }),
+      session.run(["add", "work", "--pat"], { terminal: true, typed: TYPED, profile: slowProfile }),
+    ]);
+    const addedLine = 'Added "work" (a@example.com). It is the default account.';
+    const takenLine = 'Error: An account named "work" already exists. Remove it first to replace it.';
+    assert.equal(results.filter((result) => result.out.join("\n") === addedLine).length, 1);
+    assert.equal(results.filter((result) => result.err.join("\n") === takenLine).length, 1);
+    // The taken name is refused before the identity check, so only one check ran.
+    assert.equal(results.reduce((total, result) => total + result.profileCalls, 0), 1);
+    assert.equal(session.tokens.size(), 1);
+    assert.deepEqual((await Registry.load(session.file)).names(), ["work"]);
   }));
 
 test("remove of a name with no record, when the token store cannot read it, prints one line with no keyring text, and exits 1", () =>

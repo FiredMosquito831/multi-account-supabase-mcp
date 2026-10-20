@@ -1,4 +1,5 @@
 import { addAccount } from "./accounts/add-account.js";
+import { withRegistryLock } from "./accounts/lock.js";
 import { assertValidName } from "./accounts/names.js";
 import { Registry } from "./accounts/registry.js";
 import { accountListText } from "./mux/account-tools.js";
@@ -20,8 +21,8 @@ export type CliIo = {
   serve: () => Promise<void>;
 };
 
-// Text that contains sbp_ (in any case) has the shape of a token, and the CLI never prints it. No valid account name
-// has an underscore, so no valid name is refused.
+// Text that contains sbp_ (in any case) has the shape of a token, and the CLI never prints it. A command or a name with
+// this shape gets the note alone, and exit code 2. No valid account name has an underscore, so no valid name is refused.
 const TOKEN_NOTE = "That input looks like a token, so it is not repeated.";
 const looksLikeToken = (text: string): boolean => /sbp_/i.test(text);
 const shown = (text: string): string => (looksLikeToken(text) ? TOKEN_NOTE : text);
@@ -89,7 +90,8 @@ const addCommand = async (args: string[], io: CliIo): Promise<number> => {
   // The name is checked before the prompt, so a bad name never asks for a token. A token-shaped name gets the note
   // alone, so the name is not printed.
   if (looksLikeToken(name)) {
-    throw new Error(TOKEN_NOTE);
+    io.stderr(TOKEN_NOTE);
+    return 2;
   }
   assertValidName(name);
   // The registry is read before the prompt, so a file that cannot be read is reported before a token is typed.
@@ -105,19 +107,24 @@ const addCommand = async (args: string[], io: CliIo): Promise<number> => {
   }
   let summary: string;
   try {
-    const record = await addAccount(
-      {
-        registry,
-        tokens: io.tokens,
-        fetchProfile: io.fetchProfile,
-        addedAt: io.addedAt,
-        warn: (text) => io.stderr(text),
-      },
-      name,
-      token,
-    );
-    const isDefault = registry.defaultName() === name ? " It is the default account." : "";
-    summary = `Added "${shown(record.name)}" (${record.email}).${isDefault}`;
+    // The lock is taken after the prompt, so no other command waits while the owner types. Inside it, the registry is
+    // read again, so the name check and the save use the file as it is at that time.
+    summary = await withRegistryLock(io.registryFile, async () => {
+      const fresh = await Registry.load(io.registryFile);
+      const record = await addAccount(
+        {
+          registry: fresh,
+          tokens: io.tokens,
+          fetchProfile: io.fetchProfile,
+          addedAt: io.addedAt,
+          warn: (text) => io.stderr(text),
+        },
+        name,
+        token,
+      );
+      const isDefault = fresh.defaultName() === name ? " It is the default account." : "";
+      return `Added "${shown(record.name)}" (${record.email}).${isDefault}`;
+    });
   } catch (error) {
     // The typed token is removed from the message and the cause before anything is printed.
     return reportError(io, error, [token]);
@@ -143,15 +150,23 @@ const defaultCommand = async (args: string[], io: CliIo): Promise<number> => {
     return usageError(io);
   }
   const [name] = parsed.positional;
-  const registry = await Registry.load(io.registryFile);
-  // Checked here, not by setDefault, because setDefault's message would print the name as it was typed.
-  if (registry.get(name) === undefined) {
-    throw new Error(`No account named "${shown(name)}".`);
+  // A token-shaped name is refused before the registry is read or the lock is taken, so no file or store is touched.
+  if (looksLikeToken(name)) {
+    io.stderr(TOKEN_NOTE);
+    return 2;
   }
-  registry.setDefault(name);
-  await registry.save();
-  io.stdout(`Default account: ${shown(name)}`);
-  return 0;
+  // The change runs under the lock, and the registry is read again inside it.
+  return withRegistryLock(io.registryFile, async () => {
+    const registry = await Registry.load(io.registryFile);
+    // Checked here, not by setDefault, because setDefault's message would print the name as it was typed.
+    if (registry.get(name) === undefined) {
+      throw new Error(`No account named "${shown(name)}".`);
+    }
+    registry.setDefault(name);
+    await registry.save();
+    io.stdout(`Default account: ${shown(name)}`);
+    return 0;
+  });
 };
 
 // remove <name>. It removes the record and the token. A name with no record still has its token removed when one is
@@ -162,44 +177,48 @@ const removeCommand = async (args: string[], io: CliIo): Promise<number> => {
     return usageError(io);
   }
   const [name] = parsed.positional;
-  // A token-shaped name names no account, so nothing stored under it is read or deleted.
+  // A token-shaped name names no account, so nothing stored under it is read or deleted, and the registry is not read.
   if (looksLikeToken(name)) {
-    throw new Error(`No account named "${shown(name)}".`);
+    io.stderr(TOKEN_NOTE);
+    return 2;
   }
-  const registry = await Registry.load(io.registryFile);
-  const hadRecord = registry.remove(name) !== undefined;
-  if (hadRecord) {
-    await registry.save();
-  } else {
-    // A name with no record is known only by its stored token, so the store is read. A failed read gets one fixed
-    // line, and the keyring's own text is left out.
-    let stored: string | undefined;
+  // The whole removal runs under the lock, and the registry is read again inside it.
+  return withRegistryLock(io.registryFile, async () => {
+    const registry = await Registry.load(io.registryFile);
+    const hadRecord = registry.remove(name) !== undefined;
+    if (hadRecord) {
+      await registry.save();
+    } else {
+      // A name with no record is known only by its stored token, so the store is read. A failed read gets one fixed
+      // line, and the keyring's own text is left out.
+      let stored: string | undefined;
+      try {
+        stored = await io.tokens.get(name);
+      } catch {
+        io.stderr(
+          `Error: The stored token for "${shown(name)}" could not be read. Run: multi-account-supabase-mcp remove ${shown(name)}`,
+        );
+        return 1;
+      }
+      if (stored === undefined) {
+        throw new Error(`No account named "${shown(name)}".`);
+      }
+    }
     try {
-      stored = await io.tokens.get(name);
+      await io.tokens.delete(name);
     } catch {
+      // The keyring's own text is left out. Running remove again finds the token and deletes it.
+      const remedy = `multi-account-supabase-mcp remove ${shown(name)}`;
       io.stderr(
-        `Error: The stored token for "${shown(name)}" could not be read. Run: multi-account-supabase-mcp remove ${shown(name)}`,
+        hadRecord
+          ? `Error: The account "${shown(name)}" was removed, but its stored token could not be deleted. Run: ${remedy}`
+          : `Error: The stored token for "${shown(name)}" could not be deleted. Run: ${remedy}`,
       );
       return 1;
     }
-    if (stored === undefined) {
-      throw new Error(`No account named "${shown(name)}".`);
-    }
-  }
-  try {
-    await io.tokens.delete(name);
-  } catch {
-    // The keyring's own text is left out. Running remove again finds the token and deletes it.
-    const remedy = `multi-account-supabase-mcp remove ${shown(name)}`;
-    io.stderr(
-      hadRecord
-        ? `Error: The account "${shown(name)}" was removed, but its stored token could not be deleted. Run: ${remedy}`
-        : `Error: The stored token for "${shown(name)}" could not be deleted. Run: ${remedy}`,
-    );
-    return 1;
-  }
-  io.stdout(`Removed "${shown(name)}".`);
-  return 0;
+    io.stdout(`Removed "${shown(name)}".`);
+    return 0;
+  });
 };
 
 // serve. It runs io.serve, and it returns 0 when that resolves.
@@ -245,7 +264,12 @@ const dispatch = async (argv: string[], io: CliIo): Promise<number> => {
     case "-h":
       return helpCommand(args, io);
     default:
-      io.stderr(`Unknown command "${shown(command)}".`);
+      // A token-shaped command gets the note alone, so the text is not printed.
+      if (looksLikeToken(command)) {
+        io.stderr(TOKEN_NOTE);
+        return 2;
+      }
+      io.stderr(`Unknown command "${command}".`);
       io.stderr(usageText);
       return 2;
   }
