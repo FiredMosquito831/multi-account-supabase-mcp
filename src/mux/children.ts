@@ -109,6 +109,9 @@ export class ChildPool {
   // catalog start that is still pending is closed too. Whoever takes an entry out of this set closes its child, so each
   // child is closed once: closeAll takes every entry, and catalog() takes its own when its listing ends.
   private readonly catalogStarts = new Set<Promise<ChildClient>>();
+  // The closes that a catalog call or a timed-out call started, until each one settles. closeAll waits for them, so a
+  // close that is still running is not left open when closeAll returns.
+  private readonly pendingCloses = new Set<Promise<void>>();
 
   constructor(
     private readonly start: StartChild,
@@ -125,12 +128,15 @@ export class ChildPool {
     return this.ensure(`write:${account}`, () => this.startAccount(account, false));
   }
 
+  // The placeholder child serves only search_docs, a read, so it is read-only. The catalog child is not, so that its
+  // list holds every tool.
   placeholder(): Promise<ChildClient> {
-    return this.ensure("placeholder", () => this.start({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN }));
+    return this.ensure("placeholder", () => this.start({ account: null, readOnly: true, token: PLACEHOLDER_TOKEN }));
   }
 
-  // Starts a child for the catalog, lists its tools and closes it, also when the listing fails. When closeAll has taken
-  // the child, closeAll closes it, and this call does not close it again.
+  // Starts a child for the catalog, lists its tools and closes it, also when the listing fails. A close error is not
+  // reported, because the result is the listing. When closeAll has taken the child, closeAll closes it, and this call
+  // does not close it again.
   async catalog(): Promise<OfficialTool[]> {
     this.refuseWhenClosed();
     const starting = this.start({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN });
@@ -147,37 +153,53 @@ export class ChildPool {
       this.refuseWhenClosed();
       return await child.listTools();
     } finally {
-      // Only the caller that takes the entry out of the set closes the child.
+      // Only the caller that takes the entry out of the set closes the child. closeAll waits for that close.
       if (this.catalogStarts.delete(starting)) {
-        await child.close();
+        await this.closeTracked(child);
       }
     }
   }
 
   // Closes the pool. The flag is set first, so no call starts a child from now on. Every start in the map, and every
   // catalog start still in its set, is taken out and closed here, including a start that is still pending. closeAll
-  // waits for all of the closes. A catalog child that its own call has already taken is closed by that call.
+  // also waits for the closes that are still running. It waits for every close, then throws the first close error, if
+  // there was one. A child that a catalog call or a timed-out call closes itself is waited for here too.
   async closeAll(): Promise<void> {
     this.closed = true;
     const opened = [...this.children.values(), ...this.catalogStarts];
+    const running = [...this.pendingCloses];
     this.children.clear();
     this.catalogStarts.clear();
-    await Promise.all(
-      opened.map(async (entry) => {
+    const results = await Promise.allSettled([
+      ...opened.map(async (entry) => {
         // A start that failed has nothing to close.
         const child = await entry.catch(() => undefined);
         await child?.close();
       }),
-    );
+      ...running,
+    ]);
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") {
+      throw failure.reason;
+    }
   }
 
   private async startAccount(account: string, readOnly: boolean): Promise<ChildClient> {
     const token = await this.options.tokenFor(account);
+    // The pool may have closed while the token was read. Then no child starts.
+    this.refuseWhenClosed();
     // An account child never gets the placeholder. A stored value that equals it is refused before a child starts.
     if (token === PLACEHOLDER_TOKEN) {
       throw new Error(`The stored token for account "${account}" is the placeholder, so no child was started.`);
     }
-    return this.start({ account, readOnly, token });
+    try {
+      return await this.start({ account, readOnly, token });
+    } catch {
+      // The start's own error is not attached, because its text is not reviewed for token content.
+      throw new Error(
+        `The server for account "${account}" did not start. Check that its token is still valid and that the network is reachable.`,
+      );
+    }
   }
 
   // Returns the child under key while it is alive. Otherwise it starts a new one, and keeps the start under key.
@@ -230,10 +252,21 @@ export class ChildPool {
     }
   }
 
+  // Closes a child, and keeps the close in pendingCloses until it settles, so closeAll waits for it.
+  // A close error is not reported here, because the caller already has its own result.
+  private closeTracked(child: ChildClient): Promise<void> {
+    const closing = child.close().catch(() => undefined);
+    this.pendingCloses.add(closing);
+    void closing.then(() => {
+      this.pendingCloses.delete(closing);
+    });
+    return closing;
+  }
+
   // The child that callers get. Its callTool is limited by the pool's own timer as well as by the SDK's timeout.
   // The child gets the smaller of the caller's timeout and the pool's limit, so the SDK's timeout never fires first.
   // When the pool's timer wins, leave takes the child out of the pool, and the child is closed without waiting for the
-  // close. The caller gets the timeout error at once.
+  // close, but closeAll still waits for that close. The caller gets the timeout error at once.
   private wrap(child: ChildClient, leave: () => void): ChildClient {
     return {
       listTools: () => child.listTools(),
@@ -241,8 +274,8 @@ export class ChildPool {
         const limit = Math.min(timeoutMs, this.toolTimeoutMs);
         return withLimit(() => child.callTool(name, args, limit), limit, () => {
           leave();
-          // A failed close is not reported, because the caller already has the timeout error.
-          child.close().catch(() => undefined);
+          // The close is tracked, so closeAll waits for it. The caller already has the timeout error.
+          void this.closeTracked(child);
         });
       },
       isAlive: () => child.isAlive(),

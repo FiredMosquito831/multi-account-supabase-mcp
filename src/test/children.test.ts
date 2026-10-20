@@ -125,6 +125,14 @@ test("catalog closes its child even when listing fails", async () => {
   assert.equal(fake.children[0].closes, 1);
 });
 
+test("a close that fails after a good listing does not replace the listing", async () => {
+  const tools: OfficialTool[] = [{ name: "list_projects", inputSchema: { type: "object" } }];
+  const fake = fakeStart({ tools, closeError: new Error("close failed") });
+  const pool = new ChildPool(fake.start, { tokenFor });
+  assert.deepEqual(await pool.catalog(), tools);
+  assert.equal(fake.children[0].closes, 1);
+});
+
 test("a child that reports isAlive false is replaced by a new start on the next read", async () => {
   const fake = fakeStart();
   const pool = new ChildPool(fake.start, { tokenFor });
@@ -202,6 +210,17 @@ test("no account child receives the placeholder token, and placeholder() starts 
   assert.deepEqual(fake.specs, [
     { account: "work", readOnly: true, token: "work-token" },
     { account: "work", readOnly: false, token: "work-token" },
+    { account: null, readOnly: true, token: PLACEHOLDER_TOKEN },
+  ]);
+});
+
+test("the placeholder child is read-only, and the catalog child is not", async () => {
+  const fake = fakeStart({ tools: [] });
+  const pool = new ChildPool(fake.start, { tokenFor });
+  await pool.placeholder();
+  await pool.catalog();
+  assert.deepEqual(fake.specs, [
+    { account: null, readOnly: true, token: PLACEHOLDER_TOKEN },
     { account: null, readOnly: false, token: PLACEHOLDER_TOKEN },
   ]);
 });
@@ -211,6 +230,24 @@ test("an account whose stored token is the placeholder is refused before any chi
   const pool = new ChildPool(fake.start, { tokenFor: async () => PLACEHOLDER_TOKEN });
   await assert.rejects(pool.read("work"), /placeholder/);
   assert.equal(fake.specs.length, 0);
+});
+
+test("a start that fails names the account, and the message has neither the original error nor the token", async () => {
+  const token = "token-value-for-work-0001";
+  const pool = new ChildPool(
+    async () => {
+      throw new Error(`connect failed with ${token}`);
+    },
+    { tokenFor: async () => token },
+  );
+  const error = await errorOf(pool.read("work"));
+  assert.ok(error instanceof Error, "the call must reject with an Error");
+  assert.equal(
+    error.message,
+    'The server for account "work" did not start. Check that its token is still valid and that the network is reachable.',
+  );
+  assert.equal(error.message.includes(token), false, "the message must not contain the token");
+  assert.equal(Object.hasOwn(error, "cause"), false, "the original error must not be attached as a cause");
 });
 
 test("closeAll closes every child the pool started", async () => {
@@ -223,6 +260,48 @@ test("closeAll closes every child the pool started", async () => {
   assert.deepEqual(
     fake.children.map((child) => child.closes),
     [1, 1, 1],
+  );
+});
+
+test("closeAll waits for every close, and then rejects with the first close error", async () => {
+  const children: FakeChild[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const start: StartChild = async (spec) => {
+    const child = new FakeChild();
+    child.close = async () => {
+      child.closes += 1;
+      child.alive = false;
+      if (spec.account === "failing") {
+        throw new Error("the first close failed");
+      }
+      await gate;
+    };
+    children.push(child);
+    return child;
+  };
+  const pool = new ChildPool(start, { tokenFor });
+  await pool.read("failing");
+  await pool.read("slow");
+  let closed = false;
+  const closing = errorOf(
+    pool.closeAll().finally(() => {
+      closed = true;
+    }),
+  );
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(closed, false, "closeAll must wait for the close that is still held");
+  } finally {
+    release();
+  }
+  const error = await closing;
+  assert.equal(error instanceof Error ? error.message : undefined, "the first close failed");
+  assert.deepEqual(
+    children.map((child) => child.closes),
+    [1, 1],
   );
 });
 
@@ -256,6 +335,8 @@ test("a start that is pending when closeAll runs is closed, and its call gets th
   };
   const pool = new ChildPool(start, { tokenFor });
   const pending = errorOf(pool.read("work"));
+  // Let the start begin before closeAll runs, so that the start is in progress when closeAll runs.
+  await new Promise((resolve) => setImmediate(resolve));
   const closing = pool.closeAll();
   release();
   await closing;
@@ -314,6 +395,9 @@ test("a read that waits on a held start gets the shutdown message, and no child 
   };
   const pool = new ChildPool(start, { tokenFor });
   const holder = errorOf(pool.read("work"));
+  // Let the holder's start begin before closeAll runs, so that the start is in progress when closeAll runs.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(specs.length, 1, "the holder's start must have begun before closeAll");
   const waiter = errorOf(pool.read("work"));
   const closing = pool.closeAll();
   release();
@@ -330,9 +414,34 @@ test("a read that waits on a held start gets the shutdown message, and no child 
     SHUTTING_DOWN,
     "the read that waited on the start must reject with the shutdown message",
   );
-  assert.equal(specs.length, 1, "no child starts after closeAll");
+  assert.equal(specs.length, 1, "only the holder's start may run, and it began before closeAll");
   assert.equal(children.length, 1);
   assert.equal(children[0].closes, 1, "closeAll closes the child that the held start produced");
+});
+
+test("a read whose token is still being read when closeAll runs starts no child", async () => {
+  const fake = fakeStart();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const pool = new ChildPool(fake.start, {
+    tokenFor: async (account) => {
+      await gate;
+      return `${account}-token`;
+    },
+  });
+  const reading = errorOf(pool.read("work"));
+  const closing = pool.closeAll();
+  release();
+  await closing;
+  const error = await reading;
+  assert.equal(
+    error instanceof Error ? error.message : undefined,
+    SHUTTING_DOWN,
+    "the read must get the shutdown message",
+  );
+  assert.equal(fake.specs.length, 0, "no child may start after closeAll has begun");
 });
 
 test("closeAll closes a catalog child that is still listing, and does not wait for the listing", async () => {
@@ -364,6 +473,94 @@ test("closeAll closes a catalog child that is still listing, and does not wait f
   }
   await cataloging;
   assert.equal(children[0].closes, 1, "catalog must not close the child a second time");
+});
+
+test("closeAll waits for a catalog close that is still running, and closes that child once", async () => {
+  const children: FakeChild[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let closeBegan!: () => void;
+  const began = new Promise<void>((resolve) => {
+    closeBegan = resolve;
+  });
+  const start: StartChild = async () => {
+    const child = new FakeChild({ tools: [] });
+    child.close = async () => {
+      child.closes += 1;
+      child.alive = false;
+      closeBegan();
+      await gate;
+    };
+    children.push(child);
+    return child;
+  };
+  const pool = new ChildPool(start, { tokenFor });
+  const cataloging = pool.catalog();
+  await began;
+  let closed = false;
+  const closing = errorOf(
+    pool.closeAll().finally(() => {
+      closed = true;
+    }),
+  );
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(closed, false, "closeAll must wait for the catalog close that is still held");
+  } finally {
+    release();
+  }
+  assert.equal(await closing, undefined, "closeAll must resolve once the close is done");
+  assert.deepEqual(await cataloging, []);
+  assert.equal(children[0].closes, 1, "the catalog child must be closed once");
+});
+
+test("closeAll waits for the close that a timed-out call started, and closes that child once", async () => {
+  const children: FakeChild[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let closeBegan!: () => void;
+  const began = new Promise<void>((resolve) => {
+    closeBegan = resolve;
+  });
+  const start: StartChild = async () => {
+    const child = new FakeChild();
+    child.close = async () => {
+      child.closes += 1;
+      child.alive = false;
+      closeBegan();
+      await gate;
+    };
+    children.push(child);
+    return child;
+  };
+  const pool = new ChildPool(start, { toolTimeoutMs: 20, tokenFor });
+  const current = await pool.read("work");
+  // The call never answers, so the pool's limit ends it, and the close of the timed-out child starts.
+  const timedOut = errorOf(current.callTool("execute_sql", {}, TOOL_TIMEOUT_MS));
+  await began;
+  const timeoutError = await timedOut;
+  assert.equal(
+    timeoutError instanceof Error ? timeoutError.message : undefined,
+    "Supabase did not answer in time (limit: 15 minutes).",
+  );
+  let closed = false;
+  const closing = errorOf(
+    pool.closeAll().finally(() => {
+      closed = true;
+    }),
+  );
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(closed, false, "closeAll must wait for the close that the timeout started");
+  } finally {
+    release();
+  }
+  assert.equal(await closing, undefined, "closeAll must resolve once the close is done");
+  assert.equal(children[0].closes, 1, "the timed-out child must be closed once");
 });
 
 test("childEnv keeps PATH and the token, and drops the other names of the example parent", () => {

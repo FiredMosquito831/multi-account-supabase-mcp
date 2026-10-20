@@ -300,7 +300,7 @@ test("search_docs runs on the placeholder child, the account argument is not sen
     const { deps, specs, calls } = depsFor(registry, () => reply);
     const result = await handleCall(deps, "search_docs", { account: "work", query: "rls" });
     assert.strictEqual(result, reply);
-    assert.deepEqual(specs, [{ account: null, readOnly: false, token: PLACEHOLDER_TOKEN }]);
+    assert.deepEqual(specs, [{ account: null, readOnly: true, token: PLACEHOLDER_TOKEN }]);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].name, "search_docs");
     assert.deepEqual(calls[0].args, { query: "rls" });
