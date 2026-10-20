@@ -1,0 +1,7 @@
+multi-account-supabase-mcp
+Copyright 2026 FiredMosquito831
+Licensed under the Apache License, Version 2.0
+
+This project depends on @supabase/mcp-server-supabase (Apache-2.0), maintained by Supabase.
+
+Supabase is a trademark of its owner. This project is not affiliated with or endorsed by Supabase.

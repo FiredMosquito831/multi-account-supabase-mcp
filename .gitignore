@@ -1,0 +1,8 @@
+node_modules/
+dist/
+
+# Local only, never committed
+CLAUDE.md
+.remember/
+.claude/
+*.tgz
