@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { assertValidName } from "./names.js";
@@ -163,11 +164,12 @@ export class Registry {
     this.defaultAccount = name;
   }
 
-  // Writes <file>.tmp, syncs it, then renames it over <file>.
-  // A save that fails before the rename leaves <file> as it was.
+  // Writes a temporary file of its own, syncs it, then renames it over <file>. No two saves share a temporary
+  // name, so two saves at the same time never write to the same bytes.
+  // A save that fails before the rename leaves <file> as it was. A failed save tries to remove its temporary file.
   async save(): Promise<void> {
     const text = `${JSON.stringify({ default: this.defaultAccount, accounts: this.accounts }, null, 2)}\n`;
-    const temp = `${this.file}.tmp`;
+    const temp = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
     await mkdir(path.dirname(this.file), { recursive: true });
     try {
       const handle = await open(temp, "w");

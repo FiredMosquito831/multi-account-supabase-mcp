@@ -162,7 +162,7 @@ ANSWERED by the owner on 2026-10-20: S1 environment variable. S2 two children. S
 - **S9 (new). In-chat add of an account.** Netlify has `account_add`, which starts a browser login in the chat. Supabase has no browser login in this plan: the token is typed in a terminal (`add <name> --pat`), as the owner decided for Netlify's PAT route. Options: (a) no `account_add`, and `account_list` only; (b) an `account_add` that only tells the user the terminal command. Recommended: (a).
 
 - **S10 (new, from the builder check). A call that omits `account`.** A read uses the default account. A change without an explicit name is refused (recommended). The Netlify template sends a change to the default account (its decision D10). The stricter rule follows the owner's preference for refusing changes first.
-- **S7, detail added after the builder check.** The setting lives in `accounts.json` (`allowDestructiveSql`, default false). Only a terminal command changes it, and it covers `execute_sql` and `apply_migration`. The text rules are a second layer, not a barrier, because a stored function can still delete data. See design 6.5.
+- **S7, detail added after the builder check.** There is no `allowDestructiveSql` setting, and `accounts.json` holds no setting for destructive SQL. Destructive SQL and `apply_migration` pass through as the official server does (decision S7). The wrapper adds no gate for them. See design 6.5.
 
 Settled by me, to be checked by the owner while reading (my calls):
 

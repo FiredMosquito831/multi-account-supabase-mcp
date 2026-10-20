@@ -105,3 +105,7 @@ test("an error from the credential store reaches the caller", async () => {
   await assert.rejects(store.set("work", FAKE), { message: "store locked" });
   await assert.rejects(store.delete("work"), { message: "store locked" });
 });
+
+test("the credential store service name is fixed, so a rename cannot orphan stored tokens", () => {
+  assert.equal(SERVICE, "multi-account-supabase-mcp");
+});

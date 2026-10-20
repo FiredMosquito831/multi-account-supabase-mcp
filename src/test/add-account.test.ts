@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -162,4 +162,115 @@ test("a failed save and a failed token removal reject with the save error, and w
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0].includes(FAKE_TOKEN), false);
     assert.equal(warnings[0].includes(deleteError.message), false);
+  }));
+
+test("a clock error after the token is stored removes the token, leaves no record, and rejects with the clock error", () =>
+  inTempFolder(async (folder) => {
+    const registry = await Registry.load(path.join(folder, "accounts.json"));
+    const tokens = new MemoryTokenStore();
+    const clockError = new Error("The clock failed.");
+    // addedAt runs after the token is stored, so a failure here must still remove the token.
+    const failingClock = (): string => {
+      throw clockError;
+    };
+    await assert.rejects(
+      addAccount(
+        {
+          ...depsFor(registry, tokens, async () => profileOf("gotrue-work", "work@example.com")),
+          addedAt: failingClock,
+        },
+        "work",
+        FAKE_TOKEN,
+      ),
+      (error: unknown) => error === clockError,
+    );
+    assert.equal(await tokens.get("work"), undefined);
+    assert.equal(registry.get("work"), undefined);
+    assert.deepEqual(registry.list(), []);
+  }));
+
+test("a warning that throws does not replace the save error, and the failed removal is written to stderr", () =>
+  inTempFolder(async (folder) => {
+    const registry = await Registry.load(path.join(folder, "accounts.json"));
+    const saveError = new Error("The save failed.");
+    registry.save = async () => {
+      throw saveError;
+    };
+    const tokens = new MemoryTokenStore();
+    tokens.delete = async () => {
+      throw new Error("The credential store refused the removal.");
+    };
+    const warnError = new Error("The warning failed.");
+    // The stderr mock keeps the test output clean, and shows that the failed removal was still reported.
+    const stderr = mock.method(process.stderr, "write", () => true);
+    try {
+      await assert.rejects(
+        addAccount(
+          {
+            ...depsFor(registry, tokens, async () => profileOf("gotrue-work", "work@example.com")),
+            warn: () => {
+              throw warnError;
+            },
+          },
+          "work",
+          FAKE_TOKEN,
+        ),
+        (error: unknown) => error === saveError,
+      );
+      assert.equal(stderr.mock.callCount(), 1);
+    } finally {
+      stderr.mock.restore();
+    }
+  }));
+
+test("a name that breaks the name rules is refused before the identity check, and stores no token", () =>
+  inTempFolder(async (folder) => {
+    const registry = await Registry.load(path.join(folder, "accounts.json"));
+    const tokens = new MemoryTokenStore();
+    let checks = 0;
+    const countingCheck = async (): Promise<Profile> => {
+      checks += 1;
+      return profileOf("gotrue-work", "work@example.com");
+    };
+    await assert.rejects(addAccount(depsFor(registry, tokens, countingCheck), "Bad_name", FAKE_TOKEN), {
+      message:
+        'Invalid account name "Bad_name". Use 1-32 lowercase letters, digits or hyphens, starting with a letter or digit.',
+    });
+    assert.equal(checks, 0);
+    assert.equal(await tokens.get("Bad_name"), undefined);
+    assert.deepEqual(registry.list(), []);
+  }));
+
+test('the reserved name "all" is refused before the identity check, and stores no token', () =>
+  inTempFolder(async (folder) => {
+    const registry = await Registry.load(path.join(folder, "accounts.json"));
+    const tokens = new MemoryTokenStore();
+    let checks = 0;
+    const countingCheck = async (): Promise<Profile> => {
+      checks += 1;
+      return profileOf("gotrue-work", "work@example.com");
+    };
+    await assert.rejects(addAccount(depsFor(registry, tokens, countingCheck), "all", FAKE_TOKEN), {
+      message: '"all" is reserved. Pick another account name.',
+    });
+    assert.equal(checks, 0);
+    assert.equal(await tokens.get("all"), undefined);
+    assert.deepEqual(registry.list(), []);
+  }));
+
+test("an empty token is refused before the identity check, and stores no token", () =>
+  inTempFolder(async (folder) => {
+    const registry = await Registry.load(path.join(folder, "accounts.json"));
+    const tokens = new MemoryTokenStore();
+    let checks = 0;
+    const countingCheck = async (): Promise<Profile> => {
+      checks += 1;
+      return profileOf("gotrue-work", "work@example.com");
+    };
+    await assert.rejects(addAccount(depsFor(registry, tokens, countingCheck), "work", ""), {
+      message: "No token was given.",
+    });
+    assert.equal(checks, 0);
+    assert.equal(await tokens.get("work"), undefined);
+    assert.deepEqual(registry.list(), []);
   }));

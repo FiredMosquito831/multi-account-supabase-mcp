@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { type AccountRecord, Registry } from "../accounts/registry.js";
@@ -147,27 +147,13 @@ test("save, then load, gives the same records and the same default", () =>
     assert.equal(loaded.defaultName(), "play");
   }));
 
-test("save leaves no accounts.json.tmp behind", () =>
+test("save leaves no temporary file behind", () =>
   inTempFolder(async (folder) => {
     const registry = await Registry.load(path.join(folder, "accounts.json"));
     registry.add(record("work"));
     await registry.save();
     // Only the saved file is in the folder.
     assert.deepEqual(await readdir(folder), ["accounts.json"]);
-  }));
-
-test("a save that cannot write its temporary file leaves accounts.json as it was", () =>
-  inTempFolder(async (folder) => {
-    const file = path.join(folder, "accounts.json");
-    const registry = await Registry.load(file);
-    registry.add(record("work"));
-    await registry.save();
-    const before = await readFile(file);
-    registry.add(record("play"));
-    // A folder at the temporary file's path makes the write fail.
-    await mkdir(`${file}.tmp`);
-    await assert.rejects(registry.save());
-    assert.deepEqual(await readFile(file), before);
   }));
 
 const corruptFiles: [string, string][] = [
@@ -239,7 +225,7 @@ test("save writes only the metadata fields, even when a record carries more", ()
   inTempFolder(async (folder) => {
     const file = path.join(folder, "accounts.json");
     const registry = await Registry.load(file);
-    const withExtra = { ...record("work"), token: "fixture-extra-value" };
+    const withExtra = { ...record("work"), extra: "fixture-extra-value" };
     registry.add(withExtra);
     await registry.save();
     assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {
@@ -262,4 +248,53 @@ test("get, findByGotrueId, names and list read the accounts, and hand out copies
     const [first] = registry.list();
     first.name = "changed";
     assert.deepEqual(registry.names(), ["work", "play"]);
+  }));
+
+test("two saves in a row both succeed, and leave only a file that loads", () =>
+  inTempFolder(async (folder) => {
+    const file = path.join(folder, "accounts.json");
+    const registry = await Registry.load(file);
+    registry.add(record("work"));
+    await registry.save();
+    registry.add(record("play"));
+    await registry.save();
+    assert.deepEqual(await readdir(folder), ["accounts.json"]);
+    const loaded = await Registry.load(file);
+    assert.deepEqual(loaded.list(), [record("work"), record("play")]);
+  }));
+
+// The error that a save rejects with. The test fails if the save resolves.
+const errorOf = async (save: Promise<void>): Promise<NodeJS.ErrnoException> => {
+  try {
+    await save;
+  } catch (error) {
+    return error as NodeJS.ErrnoException;
+  }
+  throw new Error("The save was expected to fail, but it succeeded.");
+};
+
+test("two saves that run at the same time use different temporary files", () =>
+  inTempFolder(async (folder) => {
+    const file = path.join(folder, "accounts.json");
+    const registry = await Registry.load(file);
+    registry.add(record("work"));
+    // A folder at the target path makes each rename fail. The rename error names the temporary file it used.
+    await mkdir(file);
+    const [first, second] = await Promise.all([errorOf(registry.save()), errorOf(registry.save())]);
+    assert.equal(typeof first.path, "string");
+    assert.equal(typeof second.path, "string");
+    assert.notEqual(first.path, second.path);
+    assert.deepEqual(await readdir(folder), ["accounts.json"]);
+  }));
+
+test("a save that fails at the rename removes its temporary file, and leaves the target alone", () =>
+  inTempFolder(async (folder) => {
+    const file = path.join(folder, "accounts.json");
+    const registry = await Registry.load(file);
+    registry.add(record("work"));
+    // A folder at the target path makes the rename fail after the temporary file is written.
+    await mkdir(file);
+    await assert.rejects(registry.save());
+    assert.deepEqual(await readdir(folder), ["accounts.json"]);
+    assert.equal((await stat(file)).isDirectory(), true);
   }));
