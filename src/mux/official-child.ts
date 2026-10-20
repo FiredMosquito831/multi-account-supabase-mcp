@@ -39,7 +39,10 @@ export async function startStdioChild(spec: ChildSpec): Promise<ChildClient> {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: cliArgs,
-    env: childEnv(spec.token, process.env),
+    // The undefined entries are meant to keep the SDK default names out. The SDK spreads its defaults under this env,
+    // and Node skips an undefined value. The SDK's type does not allow undefined, so the cast is at this boundary only.
+    // childEnv has the Windows limit.
+    env: childEnv(spec.token, process.env) as Record<string, string>,
   });
   const client = new Client({
     name: "multi-account-supabase-mcp",

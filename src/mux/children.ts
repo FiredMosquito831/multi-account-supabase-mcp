@@ -1,4 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/client";
+import { DEFAULT_INHERITED_ENV_VARS } from "@modelcontextprotocol/client/stdio";
 
 // The longest a tool call may take. It is the default limit of ChildPool.
 export const TOOL_TIMEOUT_MS = 15 * 60_000;
@@ -24,6 +25,9 @@ const INHERITED_NAMES: readonly string[] = ["PATH", "Path", "PATHEXT", "SYSTEMRO
 
 // The text of a tool call that passes the limit. It does not change with the configured limit.
 const NO_ANSWER_MESSAGE = "Supabase did not answer in time (limit: 15 minutes).";
+
+// The text of a call that arrives after closeAll. No child is started for it.
+const SHUTTING_DOWN_MESSAGE = "The server is shutting down, so no child is started.";
 
 export type OfficialTool = {
   name: string;
@@ -51,8 +55,17 @@ export type ChildSpec = {
 export type StartChild = (spec: ChildSpec) => Promise<ChildClient>;
 
 // The environment of a child. It holds the allowed names from the parent, and the token when one is given.
-export function childEnv(token: string | undefined, parent: NodeJS.ProcessEnv): Record<string, string> {
-  const env: Record<string, string> = {};
+// Every SDK default name outside the allowlist is set to undefined. The SDK spreads its defaults under the env it is
+// given, and Node skips an undefined value, so the spread leaves those names out. On Windows, the spawn adds some
+// parent names back when the env lacks them (HOMEDRIVE, HOMEPATH, LOGONSERVER, SYSTEMDRIVE, USERDOMAIN, USERNAME,
+// USERPROFILE, WINDIR), so an undefined mark does not remove those.
+export function childEnv(token: string | undefined, parent: NodeJS.ProcessEnv): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
+  for (const name of DEFAULT_INHERITED_ENV_VARS) {
+    if (!INHERITED_NAMES.includes(name)) {
+      env[name] = undefined;
+    }
+  }
   // The names come from the parent's own keys, so a name is copied once with the case it has there.
   for (const name of Object.keys(parent)) {
     const value = parent[name];
@@ -88,6 +101,8 @@ async function withLimit<T>(work: () => Promise<T>, limitMs: number, onExpire: (
 // The pool never holds a token. It asks tokenFor for the token of each account child when that child is started.
 export class ChildPool {
   private readonly toolTimeoutMs: number;
+  // Set by closeAll. A closed pool starts no child.
+  private closed = false;
   // The children by kind and account. An entry is the start itself, so two calls that arrive together share one start.
   private readonly children = new Map<string, Promise<ChildClient>>();
 
@@ -112,6 +127,7 @@ export class ChildPool {
 
   // Starts a child for the catalog, lists its tools and closes it, also when the listing fails.
   async catalog(): Promise<OfficialTool[]> {
+    this.refuseWhenClosed();
     const child = await this.start({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN });
     try {
       return await child.listTools();
@@ -121,6 +137,8 @@ export class ChildPool {
   }
 
   async closeAll(): Promise<void> {
+    // The flag is set first. From now on no call starts a child, and the starts already pending are closed below.
+    this.closed = true;
     const opened = [...this.children.values()];
     this.children.clear();
     await Promise.all(
@@ -143,6 +161,7 @@ export class ChildPool {
 
   // Returns the child under key while it is alive. Otherwise it starts a new one, and keeps the start under key.
   private async ensure(key: string, open: () => Promise<ChildClient>): Promise<ChildClient> {
+    this.refuseWhenClosed();
     const held = this.children.get(key);
     if (held !== undefined) {
       const current = await held.catch(() => undefined);
@@ -167,6 +186,13 @@ export class ChildPool {
         this.children.delete(key);
       }
       throw error;
+    }
+  }
+
+  // A closed pool starts no child. The call that asks for one fails with the shutdown message.
+  private refuseWhenClosed(): void {
+    if (this.closed) {
+      throw new Error(SHUTTING_DOWN_MESSAGE);
     }
   }
 

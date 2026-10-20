@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CallToolResult } from "@modelcontextprotocol/client";
+import { DEFAULT_INHERITED_ENV_VARS } from "@modelcontextprotocol/client/stdio";
 import { ChildPool, PLACEHOLDER_TOKEN, TOOL_TIMEOUT_MS, childEnv } from "../mux/children.js";
 import type { ChildClient, ChildSpec, OfficialTool, StartChild } from "../mux/children.js";
 
@@ -68,6 +69,11 @@ function fakeStart(options: FakeOptions = {}) {
 }
 
 const tokenFor = async (account: string): Promise<string> => `${account}-token`;
+
+// The entries of an env that have a value. childEnv also lists the SDK default names it blanks, with undefined.
+function definedEntries(env: Record<string, string | undefined>): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+}
 
 test("read gives a read-only child with the account's token, and a second read reuses it", async () => {
   const fake = fakeStart();
@@ -212,11 +218,49 @@ test("closeAll closes every child the pool started", async () => {
   );
 });
 
+// The message of a call that arrives after closeAll.
+const SHUTTING_DOWN = "The server is shutting down, so no child is started.";
+
+test("after closeAll, read, write, placeholder and catalog reject, and no child is started", async () => {
+  const fake = fakeStart();
+  const pool = new ChildPool(fake.start, { tokenFor });
+  await pool.read("work");
+  await pool.closeAll();
+  const starts = fake.specs.length;
+  await assert.rejects(pool.read("work"), { message: SHUTTING_DOWN });
+  await assert.rejects(pool.write("work"), { message: SHUTTING_DOWN });
+  await assert.rejects(pool.placeholder(), { message: SHUTTING_DOWN });
+  await assert.rejects(pool.catalog(), { message: SHUTTING_DOWN });
+  assert.equal(fake.specs.length, starts);
+});
+
+test("a start that is pending when closeAll runs is still closed when it arrives", async () => {
+  const children: FakeChild[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const start: StartChild = async () => {
+    await gate;
+    const child = new FakeChild();
+    children.push(child);
+    return child;
+  };
+  const pool = new ChildPool(start, { tokenFor });
+  const pending = pool.read("work");
+  const closing = pool.closeAll();
+  release();
+  await pending;
+  await closing;
+  assert.equal(children.length, 1);
+  assert.equal(children[0].closes, 1);
+});
+
 test("childEnv keeps PATH and the token, and drops the other names of the example parent", () => {
   const parent = { PATH: "p", AWS_SECRET_ACCESS_KEY: "x", GITHUB_TOKEN: "y", HOME: "h" };
-  assert.deepEqual(childEnv("tok", parent), { PATH: "p", SUPABASE_ACCESS_TOKEN: "tok" });
+  assert.deepEqual(definedEntries(childEnv("tok", parent)), { PATH: "p", SUPABASE_ACCESS_TOKEN: "tok" });
   const withoutToken = childEnv(undefined, parent);
-  assert.deepEqual(withoutToken, { PATH: "p" });
+  assert.deepEqual(definedEntries(withoutToken), { PATH: "p" });
   assert.equal(Object.hasOwn(withoutToken, "SUPABASE_ACCESS_TOKEN"), false);
 });
 
@@ -232,7 +276,7 @@ test("childEnv copies each allowed name and nothing else, and never the parent's
     HOME: "8",
     SUPABASE_ACCESS_TOKEN: "from-parent",
   };
-  assert.deepEqual(childEnv(undefined, parent), {
+  assert.deepEqual(definedEntries(childEnv(undefined, parent)), {
     PATH: "1",
     Path: "2",
     PATHEXT: "3",
@@ -242,4 +286,33 @@ test("childEnv copies each allowed name and nothing else, and never the parent's
     TMP: "7",
   });
   assert.equal(childEnv("given", parent).SUPABASE_ACCESS_TOKEN, "given");
+});
+
+test("childEnv marks every SDK default name outside the allowlist as undefined, and keeps the allowed names", () => {
+  const allowlist = ["PATH", "Path", "PATHEXT", "SYSTEMROOT", "SystemRoot", "TEMP", "TMP"];
+  const parent: NodeJS.ProcessEnv = {
+    PATH: "p",
+    Path: "p2",
+    PATHEXT: ".EXE",
+    SYSTEMROOT: "r",
+    SystemRoot: "r2",
+    TEMP: "t",
+    TMP: "t2",
+    AWS_SECRET_ACCESS_KEY: "x",
+  };
+  const env = childEnv("tok", parent);
+  // The names come from the SDK's own list, so the test holds on Windows and on Linux.
+  for (const name of DEFAULT_INHERITED_ENV_VARS) {
+    if (allowlist.includes(name)) {
+      if (parent[name] !== undefined) {
+        assert.equal(env[name], parent[name], `${name} keeps the parent's value`);
+      }
+    } else {
+      assert.ok(Object.hasOwn(env, name), `${name} is listed, so the SDK's default for it is overridden`);
+      assert.equal(env[name], undefined, `${name} is undefined`);
+    }
+  }
+  assert.equal(Object.hasOwn(env, "AWS_SECRET_ACCESS_KEY"), false);
+  assert.equal(env.SUPABASE_ACCESS_TOKEN, "tok");
+  assert.equal(Object.hasOwn(childEnv(undefined, parent), "SUPABASE_ACCESS_TOKEN"), false);
 });
