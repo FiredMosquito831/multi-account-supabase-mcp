@@ -86,6 +86,44 @@ const readReason = (error: unknown): string => {
 const copyOf = (account: AccountRecord | undefined): AccountRecord | undefined =>
   account === undefined ? undefined : { ...account };
 
+// The rename and the wait that save uses. Only tests change this object. Its defaults are the real fs rename and a real
+// timer.
+export const saveHooks: {
+  rename: (from: string, to: string) => Promise<void>;
+  wait: (ms: number) => Promise<void>;
+} = {
+  rename,
+  wait: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+const RENAME_TRIES = 10;
+const RENAME_WAIT_MS = 100;
+
+// On Windows, a rename can be refused for a moment while another process has the file open. These three codes mean that.
+// No other error is retried.
+const isRefusedRename = (error: unknown): boolean => {
+  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+  return code === "EPERM" || code === "EBUSY" || code === "EACCES";
+};
+
+// Renames temp over file. A refused rename waits RENAME_WAIT_MS and is tried again, up to RENAME_TRIES tries in all. Any
+// other error is thrown at once. When every try is refused, the last error is thrown.
+const renameWithRetry = async (temp: string, file: string): Promise<void> => {
+  let tries = 0;
+  for (;;) {
+    tries += 1;
+    try {
+      await saveHooks.rename(temp, file);
+      return;
+    } catch (error) {
+      if (tries >= RENAME_TRIES || !isRefusedRename(error)) {
+        throw error;
+      }
+    }
+    await saveHooks.wait(RENAME_WAIT_MS);
+  }
+};
+
 export class Registry {
   private constructor(
     private readonly file: string,
@@ -180,6 +218,7 @@ export class Registry {
   // Writes a temporary file of its own, syncs it, then renames it over <file>. No two saves share a temporary
   // name, so two saves at the same time never write to the same bytes.
   // A save that fails before the rename leaves <file> as it was. A failed save tries to remove its temporary file.
+  // A rename that is refused for a moment is tried again (see renameWithRetry).
   async save(): Promise<void> {
     const text = `${JSON.stringify({ default: this.defaultAccount, accounts: this.accounts }, null, 2)}\n`;
     const temp = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
@@ -192,7 +231,7 @@ export class Registry {
       } finally {
         await handle.close();
       }
-      await rename(temp, this.file);
+      await renameWithRetry(temp, this.file);
     } catch (error) {
       await rm(temp, { force: true }).catch(() => undefined);
       throw error;

@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { withRegistryLock } from "../accounts/lock.js";
+import { releaseHooks, withRegistryLock } from "../accounts/lock.js";
 
 const BUSY = "Another multi-account-supabase-mcp command is changing the accounts. Try again in a moment.";
 
@@ -157,4 +157,88 @@ test("(f) a release that finds another call's id in the lock file leaves that fi
       await writeFile(lock, takenOver);
     });
     assert.equal(await readFile(lock, "utf8"), takenOver);
+  }));
+
+// The text that a command prints when the lock file could not be removed. The tests compare the exact words.
+const LOCK_NOT_REMOVED =
+  "The lock file could not be removed. It expires two minutes after it was written, and a change waits for it until then.";
+
+test("a removal of the lock file that fails with EPERM still returns the work's result, and reports the failure once", () =>
+  inTempFolder(async (folder) => {
+    const file = path.join(folder, "accounts.json");
+    const realUnlink = releaseHooks.unlink;
+    let removals = 0;
+    const reports: string[] = [];
+    releaseHooks.unlink = async () => {
+      removals += 1;
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    };
+    try {
+      const value = await withRegistryLock(file, async () => "result", {
+        onReleaseFailure: (text) => {
+          reports.push(text);
+        },
+      });
+      assert.equal(value, "result");
+      assert.equal(removals, 1);
+      assert.deepEqual(reports, [LOCK_NOT_REMOVED]);
+    } finally {
+      releaseHooks.unlink = realUnlink;
+    }
+  }));
+
+test("a removal that finds the lock file already gone reports nothing, and still returns the work's result", () =>
+  inTempFolder(async (folder) => {
+    const file = path.join(folder, "accounts.json");
+    const realUnlink = releaseHooks.unlink;
+    let removals = 0;
+    const reports: string[] = [];
+    releaseHooks.unlink = async () => {
+      removals += 1;
+      throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+    };
+    try {
+      const value = await withRegistryLock(file, async () => "result", {
+        onReleaseFailure: (text) => {
+          reports.push(text);
+        },
+      });
+      assert.equal(value, "result");
+      assert.equal(removals, 1);
+      assert.deepEqual(reports, []);
+    } finally {
+      releaseHooks.unlink = realUnlink;
+    }
+  }));
+
+test("a read of the lock file that fails with EPERM returns the work's result, reports the failure once, and removes nothing", () =>
+  inTempFolder(async (folder) => {
+    const file = path.join(folder, "accounts.json");
+    const realRead = releaseHooks.read;
+    const realUnlink = releaseHooks.unlink;
+    let reads = 0;
+    let removals = 0;
+    const reports: string[] = [];
+    releaseHooks.read = async () => {
+      reads += 1;
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    };
+    releaseHooks.unlink = async (lockPath) => {
+      removals += 1;
+      await realUnlink(lockPath);
+    };
+    try {
+      const value = await withRegistryLock(file, async () => "result", {
+        onReleaseFailure: (text) => {
+          reports.push(text);
+        },
+      });
+      assert.equal(value, "result");
+      assert.equal(reads, 1);
+      assert.equal(removals, 0);
+      assert.deepEqual(reports, [LOCK_NOT_REMOVED]);
+    } finally {
+      releaseHooks.read = realRead;
+      releaseHooks.unlink = realUnlink;
+    }
   }));

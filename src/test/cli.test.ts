@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { releaseHooks } from "../accounts/lock.js";
 import { type AccountRecord, Registry } from "../accounts/registry.js";
 import { type CliIo, runCli } from "../run.js";
 import type { TokenStore } from "../secrets/token-store.js";
@@ -585,4 +586,43 @@ test("remove of a name with no record, when the token store cannot read it, prin
     ]);
     assert.deepEqual(result.out, []);
     assert.equal(printed(result).includes("keyring-internal-detail"), false);
+  }));
+
+// The text that a command prints on stderr when the lock file could not be removed. It is the text that lock.ts sends.
+const LOCK_NOT_REMOVED =
+  "The lock file could not be removed. It expires two minutes after it was written, and a change waits for it until then.";
+
+test("default, remove and add each print a lock file that could not be removed on stderr, and keep their exit code", () =>
+  inTempFolder(async (folder) => {
+    // Each command has a folder of its own. A lock file that stays behind would block the next command in the same folder.
+    const realUnlink = releaseHooks.unlink;
+    releaseHooks.unlink = async () => {
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    };
+    try {
+      const setting = sessionIn(path.join(folder, "default"));
+      await seed(setting.file, ["work", "play"]);
+      const withDefault = await setting.run(["default", "play"]);
+      assert.equal(withDefault.code, 0);
+      assert.deepEqual(withDefault.out, ["Default account: play"]);
+      assert.deepEqual(withDefault.err, [LOCK_NOT_REMOVED]);
+
+      const removing = sessionIn(path.join(folder, "remove"));
+      await seed(removing.file, ["work", "play"]);
+      const removed = await removing.run(["remove", "play"]);
+      assert.equal(removed.code, 0);
+      assert.deepEqual(removed.out, ['Removed "play".', TOKEN_STILL_WORKS]);
+      assert.deepEqual(removed.err, [LOCK_NOT_REMOVED]);
+
+      const adding = sessionIn(path.join(folder, "add"));
+      await seed(adding.file, ["work"]);
+      const added = await adding.run(["add", "office", "--pat"], {
+        profile: async () => ({ gotrueId: "gotrue-office", email: "office@example.com", username: "office" }),
+      });
+      assert.equal(added.code, 0);
+      assert.deepEqual(added.out, ['Added "office" (office@example.com).']);
+      assert.deepEqual(added.err, [LOCK_NOT_REMOVED]);
+    } finally {
+      releaseHooks.unlink = realUnlink;
+    }
   }));

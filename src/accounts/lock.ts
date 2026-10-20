@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
-// The options exist so the tests can run fast. The commands use the defaults.
+// The timing options exist so the tests can run fast. The commands use the defaults for them.
 export type RegistryLockOptions = {
   // How long a call waits for a lock that another call holds, before it gives up.
   waitMs?: number;
@@ -12,6 +12,8 @@ export type RegistryLockOptions = {
   pollMs?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  // Called with the message when the lock file could not be removed after the work. The work's result is still returned.
+  onReleaseFailure?: (message: string) => void;
 };
 
 type Settings = {
@@ -143,29 +145,68 @@ const holderIdOf = (text: string): string | undefined => {
   }
 };
 
+// Only tests change this object. Its defaults are the real fs read and unlink of the lock file, used when a call releases it.
+export const releaseHooks: {
+  read: (lockPath: string) => Promise<string>;
+  unlink: (lockPath: string) => Promise<void>;
+} = {
+  read: (lockPath: string): Promise<string> => readFile(lockPath, "utf8"),
+  unlink,
+};
+
+// The text for a lock file that could not be removed. It tells the owner when the file expires.
+const LOCK_NOT_REMOVED =
+  "The lock file could not be removed. It expires two minutes after it was written, and a change waits for it until then.";
+
+// Passes LOCK_NOT_REMOVED to the caller. A report that throws must not replace the work's result, so its error is dropped.
+const reportNotRemoved = (onReleaseFailure: ((message: string) => void) | undefined): void => {
+  if (onReleaseFailure === undefined) {
+    return;
+  }
+  try {
+    onReleaseFailure(LOCK_NOT_REMOVED);
+  } catch {
+    // The report could not be shown. The work's result still stands.
+  }
+};
+
 // Removes the lock file only when it still holds this call's id. When another call took the lock over as stale, the file
 // is that call's, so it is left alone. A failure here is not thrown, so the caller sees the work's own result or error.
-// A file that stays behind expires after staleMs.
-const releaseLock = async (lockPath: string, id: string): Promise<void> => {
+// A file that cannot be read or removed is reported through onReleaseFailure, unless the file was already gone. A file
+// that stays behind expires after staleMs.
+const releaseLock = async (
+  lockPath: string,
+  id: string,
+  onReleaseFailure?: (message: string) => void,
+): Promise<void> => {
   let text: string;
   try {
-    text = await readFile(lockPath, "utf8");
-  } catch {
-    // The file is gone, so there is nothing left to remove.
+    text = await releaseHooks.read(lockPath);
+  } catch (error) {
+    // A file that is already gone needs no report. Any other read error means this call cannot check who owns the file,
+    // so the file is left in place and reported.
+    if (errorCode(error) !== "ENOENT") {
+      reportNotRemoved(onReleaseFailure);
+    }
     return;
   }
   if (holderIdOf(text) !== id) {
     return;
   }
   try {
-    await unlink(lockPath);
-  } catch {
-    // The file stays until it expires after staleMs. The next call then reports that the accounts are being changed.
+    await releaseHooks.unlink(lockPath);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") {
+      // The file was removed between the read and this removal, so there is nothing left to remove.
+      return;
+    }
+    reportNotRemoved(onReleaseFailure);
   }
 };
 
 // Runs work while this call holds the lock for the registry file. The lock file is the registry file's path with ".lock"
-// added. The lock is released when the work returns and when it throws.
+// added. The lock is released when the work returns and when it throws. A release that fails is reported through
+// onReleaseFailure, and the call still returns the work's result or error.
 export const withRegistryLock = async <T>(
   registryFile: string,
   work: () => Promise<T>,
@@ -186,6 +227,6 @@ export const withRegistryLock = async <T>(
   try {
     return await work();
   } finally {
-    await releaseLock(lockPath, id);
+    await releaseLock(lockPath, id, options.onReleaseFailure);
   }
 };

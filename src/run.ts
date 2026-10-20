@@ -126,7 +126,7 @@ const addCommand = async (args: string[], io: CliIo): Promise<number> => {
       );
       const isDefault = fresh.defaultName() === name ? " It is the default account." : "";
       return `Added "${shown(record.name)}" (${record.email}).${isDefault}`;
-    });
+    }, { onReleaseFailure: (text) => io.stderr(text) });
   } catch (error) {
     // The typed token is removed from the message and the cause before anything is printed.
     return reportError(io, error, [token]);
@@ -168,7 +168,7 @@ const defaultCommand = async (args: string[], io: CliIo): Promise<number> => {
     await registry.save();
     io.stdout(`Default account: ${shown(name)}`);
     return 0;
-  });
+  }, { onReleaseFailure: (text) => io.stderr(text) });
 };
 
 // remove <name>. It removes the record and the token. A name with no record still has its token removed when one is
@@ -221,7 +221,7 @@ const removeCommand = async (args: string[], io: CliIo): Promise<number> => {
     io.stdout(`Removed "${shown(name)}".`);
     io.stdout(TOKEN_STILL_WORKS);
     return 0;
-  });
+  }, { onReleaseFailure: (text) => io.stderr(text) });
 };
 
 // serve. It runs io.serve, and it returns 0 when that resolves.

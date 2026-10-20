@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { type AccountRecord, Registry } from "../accounts/registry.js";
+import { type AccountRecord, Registry, saveHooks } from "../accounts/registry.js";
 
 const ADDED_AT = "2026-10-20T09:00:00.000Z";
 
@@ -300,28 +300,139 @@ const errorOf = async (save: Promise<void>): Promise<NodeJS.ErrnoException> => {
   throw new Error("The save was expected to fail, but it succeeded.");
 };
 
+// Runs one step with the rename and the wait replaced by the fakes. The real ones are put back afterwards, even when the
+// step fails.
+const withSaveHooks = async (fakes: Partial<typeof saveHooks>, run: () => Promise<void>): Promise<void> => {
+  const real = { ...saveHooks };
+  Object.assign(saveHooks, fakes);
+  try {
+    await run();
+  } finally {
+    Object.assign(saveHooks, real);
+  }
+};
+
+// A wait that returns at once, so a test does not sleep through the retries.
+const noWait = async (): Promise<void> => undefined;
+
+// An error with a file-system error code, as Node gives for a refused rename.
+const codedError = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`${code}: test error`), { code });
+
 test("two saves that run at the same time use different temporary files", () =>
   inTempFolder(async (folder) => {
-    const file = path.join(folder, "accounts.json");
-    const registry = await Registry.load(file);
-    registry.add(record("work"));
-    // A folder at the target path makes each rename fail. The rename error names the temporary file it used.
-    await mkdir(file);
-    const [first, second] = await Promise.all([errorOf(registry.save()), errorOf(registry.save())]);
-    assert.equal(typeof first.path, "string");
-    assert.equal(typeof second.path, "string");
-    assert.notEqual(first.path, second.path);
-    assert.deepEqual(await readdir(folder), ["accounts.json"]);
+    await withSaveHooks({ wait: noWait }, async () => {
+      const file = path.join(folder, "accounts.json");
+      const registry = await Registry.load(file);
+      registry.add(record("work"));
+      // A folder at the target path makes each rename fail. The rename error names the temporary file it used.
+      await mkdir(file);
+      const [first, second] = await Promise.all([errorOf(registry.save()), errorOf(registry.save())]);
+      assert.equal(typeof first.path, "string");
+      assert.equal(typeof second.path, "string");
+      assert.notEqual(first.path, second.path);
+      assert.deepEqual(await readdir(folder), ["accounts.json"]);
+    });
   }));
 
 test("a save that fails at the rename removes its temporary file, and leaves the target alone", () =>
   inTempFolder(async (folder) => {
+    await withSaveHooks({ wait: noWait }, async () => {
+      const file = path.join(folder, "accounts.json");
+      const registry = await Registry.load(file);
+      registry.add(record("work"));
+      // A folder at the target path makes the rename fail after the temporary file is written.
+      await mkdir(file);
+      await assert.rejects(registry.save());
+      assert.deepEqual(await readdir(folder), ["accounts.json"]);
+      assert.equal((await stat(file)).isDirectory(), true);
+    });
+  }));
+
+test("a rename refused twice with EPERM and then accepted saves the new content and leaves no temporary file", () =>
+  inTempFolder(async (folder) => {
     const file = path.join(folder, "accounts.json");
     const registry = await Registry.load(file);
     registry.add(record("work"));
-    // A folder at the target path makes the rename fail after the temporary file is written.
-    await mkdir(file);
-    await assert.rejects(registry.save());
+    await registry.save();
+    registry.add(record("play"));
+    const realRename = saveHooks.rename;
+    let renames = 0;
+    const waits: number[] = [];
+    await withSaveHooks(
+      {
+        rename: async (from, to) => {
+          renames += 1;
+          if (renames <= 2) {
+            throw codedError("EPERM");
+          }
+          await realRename(from, to);
+        },
+        wait: async (ms) => {
+          waits.push(ms);
+        },
+      },
+      () => registry.save(),
+    );
+    assert.equal(renames, 3);
+    assert.deepEqual(waits, [100, 100]);
+    assert.deepEqual((await Registry.load(file)).list(), [record("work"), record("play")]);
     assert.deepEqual(await readdir(folder), ["accounts.json"]);
-    assert.equal((await stat(file)).isDirectory(), true);
+  }));
+
+test("a rename refused with EBUSY every time is tried ten times, then save rejects with that error and the file is unchanged", () =>
+  inTempFolder(async (folder) => {
+    const file = path.join(folder, "accounts.json");
+    const registry = await Registry.load(file);
+    registry.add(record("work"));
+    await registry.save();
+    const before = await readFile(file);
+    registry.add(record("play"));
+    const busy = codedError("EBUSY");
+    let renames = 0;
+    const waits: number[] = [];
+    await withSaveHooks(
+      {
+        rename: async () => {
+          renames += 1;
+          throw busy;
+        },
+        wait: async (ms) => {
+          waits.push(ms);
+        },
+      },
+      async () => {
+        assert.equal(await errorOf(registry.save()), busy);
+      },
+    );
+    assert.equal(renames, 10);
+    assert.deepEqual(waits, Array.from({ length: 9 }, () => 100));
+    assert.deepEqual(await readFile(file), before);
+    assert.deepEqual(await readdir(folder), ["accounts.json"]);
+  }));
+
+test("a rename refused with ENOENT is not retried: save rejects at once, after one call, and leaves no temporary file", () =>
+  inTempFolder(async (folder) => {
+    const file = path.join(folder, "accounts.json");
+    const registry = await Registry.load(file);
+    registry.add(record("work"));
+    const missing = codedError("ENOENT");
+    let renames = 0;
+    const waits: number[] = [];
+    await withSaveHooks(
+      {
+        rename: async () => {
+          renames += 1;
+          throw missing;
+        },
+        wait: async (ms) => {
+          waits.push(ms);
+        },
+      },
+      async () => {
+        assert.equal(await errorOf(registry.save()), missing);
+      },
+    );
+    assert.equal(renames, 1);
+    assert.deepEqual(waits, []);
+    assert.deepEqual(await readdir(folder), []);
   }));
