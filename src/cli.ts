@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import os from "node:os";
 import path from "node:path";
+import { Registry } from "./accounts/registry.js";
 import { dataFolder } from "./paths.js";
 import { type CliIo, runCli } from "./run.js";
-import { KeyringTokenStore } from "./secrets/token-store.js";
+import { buildCallDeps, serveStdio } from "./serve.js";
+import { KeyringTokenStore, type TokenStore } from "./secrets/token-store.js";
 import { type FetchLike, fetchProfile } from "./supabase/api.js";
 
 // The identity check is the only network call in the add flow. It is bounded, so a hang cannot stall the add.
@@ -68,14 +70,18 @@ const readSecret = async (): Promise<string> => {
   }
 };
 
-// Task 14 replaces this stub with the stdio server. Until then, serve fails with this message.
-const serve = async (): Promise<void> => {
-  throw new Error("serve is wired in Task 14.");
+// Loads the registry once, then serves the MCP server over stdio until the client closes stdin. The registry is not read
+// again during the session, so an account added while the server runs is not used until the server restarts.
+const serveFromRegistryFile = async (registryFile: string, tokens: TokenStore): Promise<void> => {
+  const registry = await Registry.load(registryFile);
+  await serveStdio(buildCallDeps({ registry, tokens }));
 };
 
 // Builds the real streams and stores, then runs the command. In serve mode stdout carries the protocol, so every log
 // goes to stderr. The exit code is set, not forced, so a running server keeps the process alive.
 const main = async (): Promise<void> => {
+  const registryFile = path.join(dataFolder(process.env, process.platform, os.homedir()), "accounts.json");
+  const tokens = new KeyringTokenStore();
   const io: CliIo = {
     stdout: (text) => {
       process.stdout.write(`${text}\n`);
@@ -86,11 +92,11 @@ const main = async (): Promise<void> => {
     stdinIsTerminal: process.stdin.isTTY === true,
     stdoutIsTerminal: process.stdout.isTTY === true,
     readSecret,
-    registryFile: path.join(dataFolder(process.env, process.platform, os.homedir()), "accounts.json"),
-    tokens: new KeyringTokenStore(),
+    registryFile,
+    tokens,
     fetchProfile: (token) => fetchProfile(token, boundedFetch),
     addedAt: () => new Date().toISOString(),
-    serve,
+    serve: () => serveFromRegistryFile(registryFile, tokens),
   };
   process.exitCode = await runCli(process.argv.slice(2), io);
 };
