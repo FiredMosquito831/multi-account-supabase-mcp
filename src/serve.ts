@@ -1,3 +1,4 @@
+import type { Transport } from "@modelcontextprotocol/server";
 import { serveStdio as sdkServeStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import type { Registry } from "./accounts/registry.js";
 import { ChildPool, TOOL_TIMEOUT_MS } from "./mux/children.js";
@@ -34,12 +35,12 @@ export function buildCallDeps(options: CallDepsOptions): CallDeps {
   };
 }
 
-// Serves the MCP server over stdio. The SDK's helper picks the protocol era from the first message. It returns a handle
-// at once, and it does not wait for the transport to close, so the promise here resolves when the transport closes. That
-// happens when the client closes stdin. The pool's children are closed before the promise resolves. Nothing is written to
-// stdout here.
-export async function serveStdio(deps: CallDeps): Promise<void> {
-  const transport = new StdioServerTransport();
+// Serves the MCP server over the transport in options, or over stdio when none is given. The SDK's helper picks the
+// protocol era from the first message. It returns a handle at once, and it does not wait for the transport to close, so
+// the promise here resolves when the transport closes. That happens when the client closes stdin, or when the other end of
+// a given transport closes. The pool's children are closed before the promise resolves. Nothing is written to stdout here.
+export async function serveStdio(deps: CallDeps, options?: { transport?: Transport }): Promise<void> {
+  const transport = options?.transport ?? new StdioServerTransport();
   const handle = sdkServeStdio(() => createServer(deps), { transport });
   // The helper has set its own onclose on the transport. This hook runs after it, then resolves the promise.
   const closed = new Promise<void>((resolve) => {

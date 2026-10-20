@@ -12,7 +12,7 @@ import type { ChildClient, ChildSpec, OfficialTool, StartChild } from "../mux/ch
 import { createServer } from "../mux/server.js";
 import type { CallDeps } from "../mux/server.js";
 import { MemoryTokenStore, type TokenStore } from "../secrets/token-store.js";
-import { buildCallDeps } from "../serve.js";
+import { buildCallDeps, serveStdio } from "../serve.js";
 
 const ADDED_AT = "2026-10-20T09:00:00.000Z";
 
@@ -24,7 +24,7 @@ const NO_TOKEN_WORK =
 const SOURCE = fileURLToPath(new URL("../../src/", import.meta.url));
 
 // Text that writes to stdout. Stdout carries the protocol in serve mode, so none of these may appear in a protocol file.
-const FORBIDDEN = ["console.log(", "console.info(", "console.debug(", "process.stdout"];
+const FORBIDDEN = ["console.log(", "console.info(", "console.debug(", "console.dir(", "console.table(", "process.stdout"];
 
 // The .ts files that run in serve mode: the folders mux, accounts, secrets and supabase, and serve.ts. src/test is not
 // scanned.
@@ -193,6 +193,53 @@ test("an empty stored token counts as missing: the call is refused with the same
     const deps = buildCallDeps({ registry, tokens, start });
     await assert.rejects(deps.pool.read("work"), { message: NO_TOKEN_WORK });
     assert.equal(starts, 0);
+  }));
+
+// A client calls a tool that reaches the account "work", then closes. serveStdio must close every child that was started,
+// and the child for "work" must close before serveStdio resolves. A hang fails the test after ten seconds.
+test("the child for work closes before serveStdio resolves, and every child that was started is closed", { timeout: 10_000 }, () =>
+  withRegistry(["work"], "work", async (registry) => {
+    const tokens = new MemoryTokenStore();
+    await tokens.set("work", "fake-token-for-work");
+    // The events of the test, in the order they happen: each close, then the resolution of serveStdio.
+    const events: string[] = [];
+    const started: { spec: ChildSpec; closes: number }[] = [];
+    const start: StartChild = async (spec) => {
+      const record = { spec, closes: 0 };
+      started.push(record);
+      const name = spec.account ?? "catalog";
+      return {
+        listTools: async () => CATALOG,
+        callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        isAlive: () => true,
+        close: async () => {
+          record.closes += 1;
+          events.push(`closed ${name}`);
+        },
+      };
+    };
+    const deps = buildCallDeps({ registry, tokens, start });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const served = serveStdio(deps, { transport: serverTransport }).then(() => {
+      events.push("serveStdio resolved");
+    });
+    const client = new Client({ name: "serve-test-client", version: "0.0.0" });
+    await client.connect(clientTransport);
+    const result = await client.callTool({ name: "list_projects", arguments: { account: "work" } });
+    await client.close();
+    await served;
+
+    assert.deepEqual(result.content, [{ type: "text", text: "ok" }], "the fake child for work answers the call");
+    assert.ok(events.includes("serveStdio resolved"), "serveStdio has resolved");
+    const workChildren = started.filter((record) => record.spec.account === "work");
+    assert.equal(workChildren.length, 1, "one child for work was started");
+    assert.equal(workChildren[0].closes, 1, "the child for work is closed once");
+    for (const record of started) {
+      assert.equal(record.closes, 1, `the child for ${record.spec.account ?? "the catalog"} is closed`);
+    }
+    const closedAt = events.indexOf("closed work");
+    const resolvedAt = events.indexOf("serveStdio resolved");
+    assert.ok(closedAt !== -1 && closedAt < resolvedAt, `the child for work closes first (events: ${events.join(", ")})`);
   }));
 
 // A child that answers every call with "ok" and records the timeout of each call.
