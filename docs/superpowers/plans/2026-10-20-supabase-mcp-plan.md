@@ -168,7 +168,7 @@ Expected: `0`.
 
 - [ ] **Step 4: Commit**
 
-Message: `test: capture the official Supabase tool list as a fixture` with a body that lists the count (36), the command used, the placeholder check result (0), and the line `by FiredMosquito831`.
+Message: `test: capture the official Supabase tool list as a fixture` with a body that lists the count (34, ruling R9), the command used, the placeholder check result (0), and the line `by FiredMosquito831`.
 
 ---
 
@@ -198,7 +198,7 @@ Run: `npm test`. Expected: FAIL, the module `policy.js` is missing.
 
 - [ ] **Step 3: Implement the table**
 
-`src/mux/policy.ts`: `export type Mode = "none" | "all" | "locate" | "one";` `export const OPERATION_MODES: ReadonlyMap<string, Mode> = new Map<string, Mode>([ ... ])` with the 36 entries above. `export const modeOf = (tool: string): Mode => OPERATION_MODES.get(tool) ?? "one";` A `Map` is used so that inherited names do not resolve (defect T1 of the Netlify template). `export const READONLY_QUERY_TOOL = "execute_sql_readonly";` `export const READONLY_QUERY_EXPOSED = false;`
+`src/mux/policy.ts`: `export type Mode = "none" | "all" | "locate" | "one";` `export const OPERATION_MODES: ReadonlyMap<string, Mode> = new Map<string, Mode>([ ... ])` with the 34 entries above (ruling R9). `export const modeOf = (tool: string): Mode => OPERATION_MODES.get(tool) ?? "one";` A `Map` is used so that inherited names do not resolve (defect T1 of the Netlify template). `export const READONLY_QUERY_TOOL = "execute_sql_readonly";` `export const READONLY_QUERY_EXPOSED = false;`
 
 - [ ] **Step 4: Write the coverage test**
 
@@ -210,7 +210,7 @@ Run: `npm test`. Expected: all policy and coverage tests pass.
 
 - [ ] **Step 6: Commit**
 
-Message: `feat: add the policy table as a Map, unknown means one` with the body: the 36 modes, the Map reason (defect T1), the coverage rule, and `by FiredMosquito831`.
+Message: `feat: add the policy table as a Map, unknown means one` with the body: the 34 modes (R9), the Map reason (defect T1), the coverage rule, and `by FiredMosquito831`.
 
 ---
 
