@@ -56,7 +56,7 @@ From the owner:
 From the official server (VERIFIED, findings note section 2):
 
 - One token per process, from `SUPABASE_ACCESS_TOKEN` or `--access-token` (F5). A start with no token exits with code 1 (F6). So every child needs a token value, even one that only lists tools or searches the docs.
-- `--read-only` removes 12 write tools from the list, but a call by name still reaches the handler, which refuses it (F14). `execute_sql` stays listed; its hint follows the flag (F15).
+- `--read-only` removes 11 write tools from the list in the stdio build, but a call by name still reaches the handler, which refuses it (F14). The source defines 12 write tools; the stdio server does not list `create_edge_function_secret` (ruling R9, live capture 2026-10-20). `execute_sql` stays listed; its hint follows the flag (F15).
 - SQL goes to `POST /v1/projects/{ref}/database/query` with `read_only` in the body (F16). Whether the API enforces it is OPEN (F17). This matters for the new read-only tool (section 6.2).
 - In the stdio build, destructive SQL and `apply_migration` run without a confirmation step (F18).
 - `tools/list` calls no Management API. It calls the content API once for the `search_docs` description (F25).
@@ -79,7 +79,7 @@ From the official server (VERIFIED, findings note section 2):
 
 ### 6.2 Tool surface
 
-- The 36 official tools in findings section 3, with their official names and parameters.
+- The 34 official tools that the stdio server lists (findings section 3; ruling R9, from the live capture on 2026-10-20), with their official names and parameters.
 - One added argument, `account`: an optional string, one name, a comma list of names, or `all`.
 - DECIDED (S3, the owner's exception to the rule in section 5). One read-only query tool is added. MY CALL on the name: `execute_sql_readonly`, with the parameters `project_id` and `query`, the same as `execute_sql`. Its mode is `locate`. It is routed to read-only children only, and it sends `read_only: true`. It ships only after the live check of F17 passes: a write sent through it must be refused by the API, tested in a throwaway project. Until then it does not ship.
 - Each tool's description ends with a paragraph generated from the policy table, one part per operation. The rules therefore reach every agent through the tool list, not only through the skill (as in the Netlify project, decision D13).
@@ -88,8 +88,8 @@ From the official server (VERIFIED, findings note section 2):
 
 - `none`: `search_docs`. No account; runs on the placeholder child.
 - `all`: `list_organizations`, `list_projects`. Reads with no id. Each account answers for its own organizations and projects.
-- `locate`: 18 reads that take an id (organization, project, branch, function, notebook, bucket), plus the new read-only query tool (section 6.2). Every named account is asked, only the owner answers, and the others are listed under `notFoundIn`.
-- `one`: 15 tools. The 12 writes, `confirm_cost` and `get_cost` (DECIDED, S8: both one), and `execute_sql` (one writable account, never fanned out). An operation not in the table is `one`.
+- `locate`: 17 reads that take an id (organization, project, branch, function, notebook, bucket), plus the new read-only query tool (section 6.2). Every named account is asked, only the owner answers, and the others are listed under `notFoundIn`.
+- `one`: 14 tools. The 11 writes, `confirm_cost` and `get_cost` (DECIDED, S8: both one), and `execute_sql` (one writable account, never fanned out). An operation not in the table is `one`.
 - DECIDED (S10). A call that omits `account`: a read goes to the default account. A change without an explicit account name is refused, with the names of the known accounts. The Netlify template sends a change to the default account (its decision D10). The owner chose the stricter rule for Supabase.
 - A list or `all` for a `one` tool is refused before any child starts.
 - The table is held in a `Map` or a null-prototype object, and the lookup of an unknown name returns `one` (defect T1, section 6.12).

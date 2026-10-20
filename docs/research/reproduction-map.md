@@ -72,7 +72,7 @@ Defect notes. The Netlify template has defects T1 to T7 (findings note, section 
 | `src/mux/server.ts` | same | adapted | Order of checks, fan-out, results. Supabase's `execute_sql` rules (S3, S7). |
 | `src/mux/account-tools.ts` | same | adapted | `account_list` kept. `account_add` not built (S9). |
 | `src/mux/catalog.ts` | same | adapted | `account` argument; the multi-account note generated from the policy table. |
-| `src/mux/policy.ts` | same | adapted | The table in findings section 3 (36 tools; `all` 2, `locate` 18, `one` 15, `none` 1), plus one read-only query tool added by the owner's exception (S3). |
+| `src/mux/policy.ts` | same | adapted | The table in findings section 3 (34 tools listed by the stdio server; `all` 2, `locate` 17, `one` 14, `none` 1; ruling R9), plus one read-only query tool added by the owner's exception (S3). |
 | `src/mux/routing.ts` | same | copied | Account argument parsing. |
 | `src/mux/fanout.ts` | same | copied | At most four at a time. |
 | `src/mux/multiplexer.ts` | same | adapted | Two child kinds per account (S2); catalog child; placeholder child for `search_docs` (S4, S6). The Netlify neutral child is not copied as it is (playbook 10.9, C1). |

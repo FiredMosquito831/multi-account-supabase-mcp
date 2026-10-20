@@ -50,7 +50,9 @@ Sources. The official repository `supabase/mcp` at commit `2fca0719e46a9941a0765
 | F29 | The MCP registry entry `com.supabase/mcp` exists in `server.json`. | `packages/mcp-server-supabase/server.json` | VERIFIED |
 | F30 | The docs on token types (scoped and classic) and the dashboard steps were not re-read today. | none | ASSUMED from the playbook, which says VERIFIED on 2026-10-19 |
 
-## 3. Official tools (36 definitions) and the mode we propose
+## 3. Official tools (34 listed by the stdio server; 36 definitions in the source) and the mode we propose
+
+Ruling R9 (2026-10-20): the live capture of the stdio server lists 34 tools. Two definitions are not listed: `get_logs` (hidden in favour of `query_logs` when the platform provides `queryLogs`, `debugging-tools.ts:314`) and `create_edge_function_secret` (hidden unless the client is URL-capable, `server.ts:341-342`).
 
 Read from the static tool definitions. `R` means `readOnlyHint: true` in the source, `W` means `false`. The live list through a throwaway process is still to be read (phase B, step 2).
 
@@ -76,7 +78,7 @@ Read from the static tool definitions. `R` means `readOnlyHint: true` in the sou
 | 18 | list_migrations | database | database-operation-tools | R | locate | `project_id` |
 | 19 | apply_migration | database | database-operation-tools | W | one | write |
 | 20 | execute_sql | database | database-operation-tools | W static, adapt; runtime follows the flag | one, never fanned out | SQL decides read or write (S3, S7) |
-| 21 | get_logs | debugging | debugging-tools | R | locate | `project_id` |
+| 21 | get_logs | debugging | debugging-tools | R | not listed | hidden by the stdio server; `query_logs` is listed instead (R9) |
 | 22 | query_logs | debugging | debugging-tools | R | locate | `project_id` |
 | 23 | get_advisors | debugging | debugging-tools | R | locate | `project_id` |
 | 24 | get_project_url | development | development-tools | R | locate | `project_id` |
@@ -86,14 +88,14 @@ Read from the static tool definitions. `R` means `readOnlyHint: true` in the sou
 | 28 | list_edge_functions | functions | edge-function-tools | R | locate | `project_id` |
 | 29 | get_edge_function | functions | edge-function-tools | R | locate | `project_id` |
 | 30 | deploy_edge_function | functions | edge-function-tools | W | one | write |
-| 31 | create_edge_function_secret | functions | secret-tools | W | one | write; in the functions group |
+| 31 | create_edge_function_secret | functions | secret-tools | W | not listed | HTTP-only: hidden unless the client is URL-capable (`server.ts:341-342`; R9) |
 | 32 | list_notebooks | notebooks | notebook-tools | R | locate | `project_id` |
 | 33 | get_notebook | notebooks | notebook-tools | R | locate | `project_id`, `notebook_id` |
 | 34 | list_storage_buckets | storage | storage-tools | R | locate | `project_id` |
 | 35 | get_storage_config | storage | storage-tools | R | locate | `project_id` |
 | 36 | update_storage_config | storage | storage-tools | W | one | write |
 
-Count: `all` 2, `locate` 18, `one` 15 (includes `confirm_cost`, `get_cost` and `execute_sql`), `none` 1. Total 36. The owner also chose one read-only query tool, mode `locate` (S3, exception to the rule of adding only the `account` argument). It is not in the official list. The read-only write set has 12 members: tools 7, 8, 9, 10, 12, 13, 14, 15, 19, 30, 31, 36. `execute_sql` is not in it, because its readOnlyBehavior is `adapt`.
+Count: `all` 2, `locate` 17, `one` 14 (includes `confirm_cost`, `get_cost` and `execute_sql`), `none` 1. Total 34 listed by the stdio server (R9). The owner also chose one read-only query tool, mode `locate` (S3, exception to the rule of adding only the `account` argument). It is not in the official list. The read-only write set has 11 members in the stdio list: tools 7, 8, 9, 10, 12, 13, 14, 15, 19, 30, 36 (`create_edge_function_secret`, tool 31, is not listed). `execute_sql` is not in it, because its readOnlyBehavior is `adapt`.
 
 Modes follow the Netlify rule (P4): `all` for reads with no id, `locate` for reads with an id, `one` for every change and every operation the table does not know (P5). The coverage test will check this table against the live list in phase B.
 
@@ -113,6 +115,7 @@ Modes follow the Netlify rule (P4): `all` for reads with no id, `locate` for rea
 | K10 | 9.6.6 item 6 (cost flow, OPEN) | Open. | The flow is known from code (F20). The price is not known; a live create costs money and is not planned. | Keep the create checks in the live list only. |
 | K11 | 9.6.1 ("the npm build has `--secret-url-template` and `--version`") | Npm-only. | Both are in `cli.ts` too. | Minor. |
 | K12 | 9.6.1 (monorepo) | Not stated. | The official repository uses pnpm. Our template uses npm. | Our package keeps npm, as the template does (my call). |
+| K13 | 9.6.1 and section 3 (tool count) | 36 tools. | The stdio server lists 34 (live capture, 2026-10-20, ruling R9). `get_logs` is hidden in favour of `query_logs`; `create_edge_function_secret` is HTTP-only. | The table, the counts and the coverage fixture use 34. |
 
 Corrections to the Netlify side are not part of this note. The owner's G4 decision covers them, and the book's section 10.9 is the list.
 
