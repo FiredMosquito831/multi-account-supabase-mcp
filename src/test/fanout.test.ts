@@ -22,7 +22,9 @@ test("10 items with limit 4 never have more than 4 in flight, and the results ar
   assert.deepEqual(results, items.map((item) => item * 10));
 });
 
-test("after a call fails, no later item starts, and the fan-out rejects with that error", async () => {
+// One call at a time, so the calls start in the order of the items. Item 1 fails, and items 2 and 3 still start,
+// because a failure does not stop the later items.
+test("a failed call does not stop the later items, and the fan-out rejects with that error", async () => {
   const started: number[] = [];
   await assert.rejects(
     mapWithLimit([0, 1, 2, 3], 1, async (item) => {
@@ -34,7 +36,34 @@ test("after a call fails, no later item starts, and the fan-out rejects with tha
     }),
     { message: "fixture failure" },
   );
-  assert.deepEqual(started, [0, 1]);
+  assert.deepEqual(started, [0, 1, 2, 3]);
+});
+
+// The quick item fails at 5 ms while the slow item is still in flight. The slow item fails later, at 30 ms.
+// The fan-out waits for the slow item, and rejects with the first error, which is the quick item's.
+test("a call that fails while another is in flight: the fan-out waits, and rejects with the first error", async () => {
+  const quickError = new Error("quick failure");
+  const slowError = new Error("slow failure");
+  let slowSettled = false;
+  let slowRunningWhenQuickFailed = false;
+  let slowSettledWhenRejected = false;
+  let rejectedWith: unknown;
+  await mapWithLimit(["quick", "slow"], 2, async (item) => {
+    if (item === "quick") {
+      await sleep(5);
+      slowRunningWhenQuickFailed = !slowSettled;
+      throw quickError;
+    }
+    await sleep(30);
+    slowSettled = true;
+    throw slowError;
+  }).catch((error: unknown) => {
+    rejectedWith = error;
+    slowSettledWhenRejected = slowSettled;
+  });
+  assert.equal(slowRunningWhenQuickFailed, true, "the slow call must still be in flight when the quick one fails");
+  assert.equal(slowSettledWhenRejected, true, "the slow call must settle before the promise rejects");
+  assert.equal(rejectedWith, quickError, "the rejection must be the first error by identity, not the later one");
 });
 
 test("a limit that is not a whole number of at least 1 is refused before any call starts", async () => {
