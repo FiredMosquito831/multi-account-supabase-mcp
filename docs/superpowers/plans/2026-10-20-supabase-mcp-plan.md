@@ -159,7 +159,7 @@ Run: `git add -A` then `git commit -F <that file>`.
 - [ ] **Step 2: Run it**
 
 Run: `node scripts/capture-official-tools.mjs > test/fixtures/official-tools.json`.
-Expected: exit 0. Stderr prints `tools: 36`. The fixture contains `search_docs` and `create_project`, and `create_project` has `annotations.readOnlyHint` equal to `false`. The docs tool's description calls the public content API; no Management API call is made.
+Expected: exit 0. Stderr prints `tools: 34` (ruling R9: the stdio server lists 34 tools; `get_logs` is hidden in favour of `query_logs`, and `create_edge_function_secret` is HTTP-only). The fixture contains `search_docs` and `create_project`, and `create_project` has `annotations.readOnlyHint` equal to `false`. The docs tool's description calls the public content API; no Management API call is made.
 
 - [ ] **Step 3: Check that the placeholder is not in the fixture**
 
@@ -184,11 +184,11 @@ Message: `test: capture the official Supabase tool list as a fixture` with a bod
 - [ ] **Step 1: Write the failing policy test**
 
 `src/test/policy.test.ts` asserts, with `node:test` and `strict` assertions:
-- `modeOf` for each name in the table below equals the listed mode (36 names in total):
+- `modeOf` for each name in the table below equals the listed mode (34 names in total, ruling R9):
   - `none`: `search_docs`.
   - `all`: `list_organizations`, `list_projects`.
-  - `one` (15): `create_project`, `pause_project`, `restore_project`, `create_branch`, `delete_branch`, `merge_branch`, `reset_branch`, `rebase_branch`, `apply_migration`, `deploy_edge_function`, `create_edge_function_secret`, `update_storage_config`, `confirm_cost`, `get_cost`, `execute_sql`.
-  - `locate` (18): `get_organization`, `get_project`, `list_branches`, `list_tables`, `list_extensions`, `list_migrations`, `get_logs`, `query_logs`, `get_advisors`, `get_project_url`, `get_publishable_keys`, `generate_typescript_types`, `list_edge_functions`, `get_edge_function`, `list_notebooks`, `get_notebook`, `list_storage_buckets`, `get_storage_config`.
+  - `one` (14): `create_project`, `pause_project`, `restore_project`, `create_branch`, `delete_branch`, `merge_branch`, `reset_branch`, `rebase_branch`, `apply_migration`, `deploy_edge_function`, `update_storage_config`, `confirm_cost`, `get_cost`, `execute_sql`.
+  - `locate` (17): `get_organization`, `get_project`, `list_branches`, `list_tables`, `list_extensions`, `list_migrations`, `query_logs`, `get_advisors`, `get_project_url`, `get_publishable_keys`, `generate_typescript_types`, `list_edge_functions`, `get_edge_function`, `list_notebooks`, `get_notebook`, `list_storage_buckets`, `get_storage_config`.
 - Review focus 1: `modeOf("constructor") === "one"`, `modeOf("__proto__") === "one"`, `modeOf("toString") === "one"`, `modeOf("hasOwnProperty") === "one"`.
 - `READONLY_QUERY_EXPOSED === false`.
 
@@ -665,8 +665,8 @@ The test uses the nine groups without `docs`, so it needs no network. The write-
 
 - [ ] **Step 1: Write the failing test**
 
-(a) `startStdioChild({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN, features: ["account","database","debugging","development","functions","branching","storage","notebooks"] })`: `listTools()` returns 35 names, including `create_project` and `execute_sql`.
-(b) The same with `readOnly: true`: `listTools()` returns 23 names, `create_project` is absent, and `execute_sql` is present (the twelve write tools are hidden, so 35 minus 12 is 23).
+(a) `startStdioChild({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN, features: ["account","database","debugging","development","functions","branching","storage","notebooks"] })`: `listTools()` returns 33 names, including `create_project` and `execute_sql`.
+(b) The same with `readOnly: true`: `listTools()` returns 22 names, `create_project` is absent, and `execute_sql` is present (the eleven write tools are hidden, so 33 minus 11 is 22; `execute_sql` is not hidden, see R9).
 (c) On the read-only child, `callTool("pause_project", { project_id: "abc" }, 60000)` returns `isError: true`, and the text contains `read-only mode`.
 (d) Both children are closed at the end of the test.
 
