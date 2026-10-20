@@ -42,6 +42,10 @@ const LISTED_TOOLS = ["list_projects", "get_project", "create_project", "search_
 const oneAccountText = (tool: string, example: string): string =>
   `"${tool}" runs on one account only, because it can change data or is not classified yet. Name one account, for example account: "${example}".`;
 
+// The text of the refusal when no account is registered. resolveTargets throws it, and the server gives it for a read.
+const NO_ACCOUNTS_TEXT =
+  "No Supabase accounts are set up yet. Run in a terminal: multi-account-supabase-mcp add <name> --pat";
+
 const oneAccountNoAccountsText = (tool: string): string =>
   `"${tool}" runs on one account only, because it can change data or is not classified yet. No Supabase accounts are set up yet. Run in a terminal: multi-account-supabase-mcp add <name> --pat`;
 
@@ -371,6 +375,28 @@ test("a change with no account and no accounts is refused, and the message says 
     assert.equal(result.isError, true);
     assert.equal(textOf(result), oneAccountNoAccountsText("create_project"));
     assert.deepEqual(specs, []);
+  }));
+
+test("with no accounts, a read, a search and an unknown tool name are refused, and no child starts", () =>
+  withRegistry([], null, async (registry) => {
+    const { deps, counter } = countingDeps(registry);
+    // A read is refused before the catalog is read, so the catalog child is not started.
+    const read = await handleCall(deps, "list_projects", {});
+    assert.equal(read.isError, true);
+    assert.equal(textOf(read), NO_ACCOUNTS_TEXT);
+    assert.equal(counter.starts, 0, "a read starts no child, so the catalog is not read");
+    // A search is refused the same way, so the placeholder child is not started either.
+    const search = await handleCall(deps, "search_docs", { query: "rls" });
+    assert.equal(textOf(search), NO_ACCOUNTS_TEXT);
+    assert.equal(counter.starts, 0, "a search starts no child");
+    // An unknown name with an account gets the account check's text, and starts no child.
+    const unknown = await handleCall(deps, "nope", { account: "work" });
+    assert.equal(textOf(unknown), NO_ACCOUNTS_TEXT);
+    assert.equal(counter.starts, 0, "an unknown name with an account starts no child");
+    // An unknown name with no account is a change by policy, so it keeps the change refusal, which ends with the same text.
+    const unknownNoAccount = await handleCall(deps, "nope", {});
+    assert.equal(textOf(unknownNoAccount), oneAccountNoAccountsText("nope"));
+    assert.equal(counter.starts, 0, "the change refusal starts no child");
   }));
 
 test("a change that names one account writes to it even when there is no default", () =>

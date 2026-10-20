@@ -10,7 +10,7 @@ import type { ChildPool, OfficialTool } from "./children.js";
 import { FANOUT_LIMIT, mapWithLimit } from "./fanout.js";
 import { READONLY_QUERY_EXPOSED, READONLY_QUERY_TOOL, modeOf } from "./policy.js";
 import type { Mode } from "./policy.js";
-import { resolveTargets } from "./routing.js";
+import { NO_ACCOUNTS_TEXT, resolveTargets } from "./routing.js";
 import type { Targets } from "./routing.js";
 
 const SERVER_NAME = "multi-account-supabase-mcp";
@@ -81,7 +81,7 @@ const CHANGE_MAY_HAVE_HAPPENED = "The change may still have happened. Check befo
 const oneAccountRefusal = (tool: string, example: string | undefined): string => {
   const head = `"${tool}" runs on one account only, because it can change data or is not classified yet.`;
   return example === undefined
-    ? `${head} No Supabase accounts are set up yet. Run in a terminal: multi-account-supabase-mcp add <name> --pat`
+    ? `${head} ${NO_ACCOUNTS_TEXT}`
     : `${head} Name one account, for example account: "${example}".`;
 };
 
@@ -180,7 +180,8 @@ export async function handleCall(deps: CallDeps, name: string, args: Record<stri
 }
 
 // The steps of a call, in order. The first step that applies decides. A change is checked before the catalog is
-// read, so a refused change starts no child.
+// read, so a refused change starts no child. With no accounts, a read or a search is refused at step 3b, which is also
+// before the catalog is read.
 async function route(deps: CallDeps, name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   // 0. The registry is read once for this call, and every step below uses that same registry. The account children are
   // synced to it first, so this call is not handed a child of a removed account or an old token.
@@ -214,6 +215,12 @@ async function route(deps: CallDeps, name: string, args: Record<string, unknown>
     if (targets.multi) {
       return textResult(oneAccountRefusal(name, targets.accounts[0]), true);
     }
+  }
+
+  // 3b. With no accounts, a read or a search is refused here, before the catalog is read, so no child starts and no
+  // network call is made. Every change was refused in step 3 already, so this check reaches the reads and the searches.
+  if (registry.names().length === 0) {
+    return textResult(NO_ACCOUNTS_TEXT, true);
   }
 
   // 4. The name must be in the catalog. The read-only query tool counts only while it is exposed.

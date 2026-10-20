@@ -5,6 +5,11 @@ export type Targets = { accounts: string[]; multi: boolean };
 
 const joinNames = (names: readonly string[]): string => names.join(", ");
 
+// The refusal when no account is registered. resolveTargets throws it, and the server gives the same text for a call
+// that is refused before the catalog is read, so the two cannot drift apart.
+export const NO_ACCOUNTS_TEXT =
+  "No Supabase accounts are set up yet. Run in a terminal: multi-account-supabase-mcp add <name> --pat";
+
 // The checks run in this order, and the first one that applies decides.
 export function resolveTargets(argument: unknown, registry: Registry): Targets {
   if (argument !== undefined && typeof argument !== "string") {
@@ -12,9 +17,7 @@ export function resolveTargets(argument: unknown, registry: Registry): Targets {
   }
   const names = registry.names();
   if (names.length === 0) {
-    throw new Error(
-      "No Supabase accounts are set up yet. Run in a terminal: multi-account-supabase-mcp add <name> --pat",
-    );
+    throw new Error(NO_ACCOUNTS_TEXT);
   }
   const text = typeof argument === "string" ? argument.trim() : "";
   if (text === "") {
