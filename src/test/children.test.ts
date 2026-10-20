@@ -75,6 +75,14 @@ function definedEntries(env: Record<string, string | undefined>): Record<string,
   return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
 
+// Resolves with the error that a promise rejects with, or with undefined when it resolves. It never rejects, so a
+// call that fails is not left unhandled while the test waits on something else.
+const errorOf = (promise: Promise<unknown>): Promise<unknown> =>
+  promise.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+
 test("read gives a read-only child with the account's token, and a second read reuses it", async () => {
   const fake = fakeStart();
   const pool = new ChildPool(fake.start, { tokenFor });
@@ -234,7 +242,7 @@ test("after closeAll, read, write, placeholder and catalog reject, and no child 
   assert.equal(fake.specs.length, starts);
 });
 
-test("a start that is pending when closeAll runs is still closed when it arrives", async () => {
+test("a start that is pending when closeAll runs is closed, and its call gets the shutdown message", async () => {
   const children: FakeChild[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -247,13 +255,115 @@ test("a start that is pending when closeAll runs is still closed when it arrives
     return child;
   };
   const pool = new ChildPool(start, { tokenFor });
-  const pending = pool.read("work");
+  const pending = errorOf(pool.read("work"));
   const closing = pool.closeAll();
   release();
-  await pending;
   await closing;
+  const error = await pending;
+  assert.equal(
+    error instanceof Error ? error.message : undefined,
+    SHUTTING_DOWN,
+    "the call must get the shutdown message",
+  );
   assert.equal(children.length, 1);
   assert.equal(children[0].closes, 1);
+});
+
+test("a catalog start that is pending when closeAll runs is closed by closeAll, and catalog rejects", async () => {
+  const children: FakeChild[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const start: StartChild = async () => {
+    await gate;
+    const child = new FakeChild({ tools: [{ name: "list_projects", inputSchema: { type: "object" } }] });
+    children.push(child);
+    return child;
+  };
+  const pool = new ChildPool(start, { tokenFor });
+  const cataloging = errorOf(pool.catalog());
+  const closing = pool.closeAll();
+  release();
+  await closing;
+  const error = await cataloging;
+  assert.equal(
+    error instanceof Error ? error.message : undefined,
+    SHUTTING_DOWN,
+    "catalog must reject with the shutdown message",
+  );
+  assert.equal(children.length, 1);
+  assert.equal(children[0].closes, 1, "closeAll must close the catalog child, once");
+  assert.equal(children[0].alive, false, "the catalog child must not be left open");
+  assert.equal(children[0].lists, 0, "no listing may start after closeAll");
+});
+
+test("a read that waits on a held start gets the shutdown message, and no child starts after closeAll", async () => {
+  const specs: ChildSpec[] = [];
+  const children: FakeChild[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const start: StartChild = async (spec) => {
+    specs.push(spec);
+    await gate;
+    const child = new FakeChild();
+    children.push(child);
+    return child;
+  };
+  const pool = new ChildPool(start, { tokenFor });
+  const holder = errorOf(pool.read("work"));
+  const waiter = errorOf(pool.read("work"));
+  const closing = pool.closeAll();
+  release();
+  await closing;
+  const holderError = await holder;
+  const waiterError = await waiter;
+  assert.equal(
+    holderError instanceof Error ? holderError.message : undefined,
+    SHUTTING_DOWN,
+    "the call that held the start finished after closeAll began, so it gets the shutdown message",
+  );
+  assert.equal(
+    waiterError instanceof Error ? waiterError.message : undefined,
+    SHUTTING_DOWN,
+    "the read that waited on the start must reject with the shutdown message",
+  );
+  assert.equal(specs.length, 1, "no child starts after closeAll");
+  assert.equal(children.length, 1);
+  assert.equal(children[0].closes, 1, "closeAll closes the child that the held start produced");
+});
+
+test("closeAll closes a catalog child that is still listing, and does not wait for the listing", async () => {
+  const children: FakeChild[] = [];
+  let finishListing!: () => void;
+  const listing = new Promise<void>((resolve) => {
+    finishListing = resolve;
+  });
+  const start: StartChild = async () => {
+    const child = new FakeChild();
+    child.listTools = async () => {
+      child.lists += 1;
+      await listing;
+      return [];
+    };
+    children.push(child);
+    return child;
+  };
+  const pool = new ChildPool(start, { tokenFor });
+  const cataloging = errorOf(pool.catalog());
+  // Let the listing begin before closeAll runs.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(children[0].lists, 1, "the listing must have begun");
+  try {
+    await pool.closeAll();
+    assert.equal(children[0].closes, 1, "closeAll must close the listing child, while the listing is still open");
+  } finally {
+    finishListing();
+  }
+  await cataloging;
+  assert.equal(children[0].closes, 1, "catalog must not close the child a second time");
 });
 
 test("childEnv keeps PATH and the token, and drops the other names of the example parent", () => {

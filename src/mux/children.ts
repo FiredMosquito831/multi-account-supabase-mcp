@@ -105,6 +105,10 @@ export class ChildPool {
   private closed = false;
   // The children by kind and account. An entry is the start itself, so two calls that arrive together share one start.
   private readonly children = new Map<string, Promise<ChildClient>>();
+  // The catalog starts, from the moment each one starts until its child is closed. An entry is the start itself, so a
+  // catalog start that is still pending is closed too. Whoever takes an entry out of this set closes its child, so each
+  // child is closed once: closeAll takes every entry, and catalog() takes its own when its listing ends.
+  private readonly catalogStarts = new Set<Promise<ChildClient>>();
 
   constructor(
     private readonly start: StartChild,
@@ -125,22 +129,39 @@ export class ChildPool {
     return this.ensure("placeholder", () => this.start({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN }));
   }
 
-  // Starts a child for the catalog, lists its tools and closes it, also when the listing fails.
+  // Starts a child for the catalog, lists its tools and closes it, also when the listing fails. When closeAll has taken
+  // the child, closeAll closes it, and this call does not close it again.
   async catalog(): Promise<OfficialTool[]> {
     this.refuseWhenClosed();
-    const child = await this.start({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN });
+    const starting = this.start({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN });
+    this.catalogStarts.add(starting);
+    let child: ChildClient;
     try {
+      child = await starting;
+    } catch (error) {
+      this.catalogStarts.delete(starting);
+      throw error;
+    }
+    try {
+      // A start that finished after closeAll began is closed by closeAll, so no listing starts for it.
+      this.refuseWhenClosed();
       return await child.listTools();
     } finally {
-      await child.close();
+      // Only the caller that takes the entry out of the set closes the child.
+      if (this.catalogStarts.delete(starting)) {
+        await child.close();
+      }
     }
   }
 
+  // Closes the pool. The flag is set first, so no call starts a child from now on. Every start in the map, and every
+  // catalog start still in its set, is taken out and closed here, including a start that is still pending. closeAll
+  // waits for all of the closes. A catalog child that its own call has already taken is closed by that call.
   async closeAll(): Promise<void> {
-    // The flag is set first. From now on no call starts a child, and the starts already pending are closed below.
     this.closed = true;
-    const opened = [...this.children.values()];
+    const opened = [...this.children.values(), ...this.catalogStarts];
     this.children.clear();
+    this.catalogStarts.clear();
     await Promise.all(
       opened.map(async (entry) => {
         // A start that failed has nothing to close.
@@ -165,6 +186,8 @@ export class ChildPool {
     const held = this.children.get(key);
     if (held !== undefined) {
       const current = await held.catch(() => undefined);
+      // The pool may have closed while this call waited. Then the call gets the shutdown message, not a closing child.
+      this.refuseWhenClosed();
       if (current?.isAlive()) {
         return current;
       }
@@ -178,8 +201,9 @@ export class ChildPool {
     const opening = open().then((child) => this.wrap(child, () => this.forget(key, entry)));
     entry.start = opening;
     this.children.set(key, opening);
+    let child: ChildClient;
     try {
-      return await opening;
+      child = await opening;
     } catch (error) {
       // A failed start is not kept, so the next call starts again.
       if (this.children.get(key) === opening) {
@@ -187,6 +211,9 @@ export class ChildPool {
       }
       throw error;
     }
+    // A start that finished after closeAll began is closed by closeAll, so it is not handed out.
+    this.refuseWhenClosed();
+    return child;
   }
 
   // A closed pool starts no child. The call that asks for one fails with the shutdown message.
