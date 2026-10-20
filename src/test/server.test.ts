@@ -531,6 +531,55 @@ test("listTools gives the catalog with the account argument, then account_list, 
     assert.deepEqual(propertiesOf("account_list"), {});
   }));
 
+test("with no accounts, listTools gives only account_list, and no child is started", () =>
+  withRegistry([], null, async (registry) => {
+    const { deps, counter } = countingDeps(registry);
+    const tools = await listTools(deps);
+    assert.deepEqual(
+      tools.map((tool) => tool.name),
+      ["account_list"],
+    );
+    assert.equal(counter.starts, 0, "no child is started, so the catalog is not read");
+  }));
+
+test("listTools with one account gives the catalog with the account argument, then account_list", () =>
+  withRegistry(["work"], "work", async (registry) => {
+    const { deps } = depsFor(registry, () => ok("unused"));
+    const tools = await listTools(deps);
+    assert.deepEqual(
+      tools.map((tool) => tool.name),
+      LISTED_TOOLS,
+    );
+    const propertiesOf = (name: string): Record<string, unknown> =>
+      tools.find((tool) => tool.name === name)?.inputSchema.properties as Record<string, unknown>;
+    assert.ok(Object.hasOwn(propertiesOf("list_projects"), "account"));
+    // search_docs has no account argument, so its schema is the official one.
+    assert.equal(Object.hasOwn(propertiesOf("search_docs"), "account"), false);
+  }));
+
+test("with no accounts, the one tool is account_list, and its description says why the Supabase tools are missing and how to add one", () =>
+  withRegistry([], null, async (registry) => {
+    const { deps } = depsFor(registry, () => ok("unused"));
+    const tools = await listTools(deps);
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0].name, "account_list");
+    assert.deepEqual(tools[0].inputSchema, { type: "object", properties: {} });
+    assert.equal(
+      tools[0].description,
+      "No Supabase accounts are set up yet, so the Supabase tools are not listed. Add an account in a terminal with: multi-account-supabase-mcp add <name> --pat. Then list the tools again.",
+    );
+  }));
+
+test("with one account, the account_list description is the usual one", () =>
+  withRegistry(["work"], "work", async (registry) => {
+    const { deps } = depsFor(registry, () => ok("unused"));
+    const accountList = (await listTools(deps)).find((tool) => tool.name === "account_list");
+    assert.equal(
+      accountList?.description,
+      "Lists the accounts this server knows, with the email of each. The default account is marked with an asterisk. Tokens are never shown.",
+    );
+  }));
+
 test("through the protocol, tools/list shows the tools, and a refused change comes back as an error result", () =>
   withRegistry(["work", "personal"], "work", async (registry) => {
     const { deps, specs } = depsFor(registry, () => ok("unused"));
@@ -699,4 +748,94 @@ test("a failed catalog read is not kept, so the next list reads again", () =>
     } finally {
       await close();
     }
+  }));
+
+test("a tool list change is announced once: not at the first sync, not for an unchanged registry, and once after an account is added", () =>
+  withAccountsFile(async (file) => {
+    await writeAccounts(file, [recordOf("work")], "work");
+    const { pool } = recordingPool(async (account) => `fake-value-${account}`);
+    const deps = depsReading(file, pool);
+    // The server is built through createServer, and its notification method is replaced by a recorder.
+    const server = createServer(deps);
+    const announced: string[] = [];
+    server.sendToolListChanged = async () => {
+      announced.push("notifications/tools/list_changed");
+    };
+    await listTools(deps);
+    assert.deepEqual(announced, [], "the first sync sends nothing");
+    await listTools(deps);
+    assert.deepEqual(announced, [], "a sync with the same records sends nothing");
+    await writeAccounts(file, [recordOf("work"), recordOf("personal")], "work");
+    await listTools(deps);
+    assert.deepEqual(announced, ["notifications/tools/list_changed"], "a sync after an account is added sends one notification");
+    await listTools(deps);
+    assert.equal(announced.length, 1, "a further sync with the same records sends nothing more");
+  }));
+
+test("a reordered accounts file is announced once, and an unchanged sync after it sends nothing", () =>
+  withAccountsFile(async (file) => {
+    await writeAccounts(file, [recordOf("work"), recordOf("personal")], "work");
+    const { pool } = recordingPool(async (account) => `fake-value-${account}`);
+    const deps = depsReading(file, pool);
+    // The server is built through createServer, and its notification method is replaced by a recorder.
+    const server = createServer(deps);
+    const announced: string[] = [];
+    server.sendToolListChanged = async () => {
+      announced.push("notifications/tools/list_changed");
+    };
+    await listTools(deps);
+    assert.deepEqual(announced, [], "the first sync sends nothing");
+    // The same two records in the other order. The account argument lists the names in file order, so the list changes.
+    await writeAccounts(file, [recordOf("personal"), recordOf("work")], "work");
+    const reordered = await listTools(deps);
+    assert.match(JSON.stringify(reordered.find((tool) => tool.name === "list_projects")?.inputSchema), /personal, work/);
+    assert.deepEqual(announced, ["notifications/tools/list_changed"], "the sync after the reorder sends one notification");
+    await listTools(deps);
+    assert.equal(announced.length, 1, "an unchanged sync after the reorder sends nothing more");
+  }));
+
+// Waits until the messages sent so far have reached their handlers. A notification handler runs after the message is read,
+// so a check made right after the send could miss it.
+const settle = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("over the protocol, the server declares tools.listChanged, and a client gets one tools/list_changed notification after an account is added, and none before", () =>
+  withAccountsFile(async (file) => {
+    await writeAccounts(file, [recordOf("work")], "work");
+    const { pool } = recordingPool(async (account) => `fake-value-${account}`);
+    const deps = depsReading(file, pool);
+    const { client, close } = await connectedClient(deps);
+    let notifications = 0;
+    client.setNotificationHandler("notifications/tools/list_changed", () => {
+      notifications += 1;
+    });
+    try {
+      assert.deepEqual(client.getServerCapabilities()?.tools, { listChanged: true });
+      await client.listTools();
+      await client.listTools();
+      await settle();
+      assert.equal(notifications, 0, "no notification before an account is added");
+      await writeAccounts(file, [recordOf("work"), recordOf("personal")], "work");
+      const listed = await client.listTools();
+      await settle();
+      assert.equal(notifications, 1, "one notification after an account is added");
+      // The list that the client reads after the notification names both accounts.
+      const project = listed.tools.find((tool) => tool.name === "list_projects");
+      assert.match(JSON.stringify(project?.inputSchema), /work, personal/);
+    } finally {
+      await close();
+    }
+  }));
+
+test("a change whose notification cannot be sent, because the transport is closed, still lists the new account", () =>
+  withAccountsFile(async (file) => {
+    await writeAccounts(file, [recordOf("work")], "work");
+    const { pool } = recordingPool(async (account) => `fake-value-${account}`);
+    const deps = depsReading(file, pool);
+    const { close } = await connectedClient(deps);
+    await listTools(deps);
+    await close();
+    await writeAccounts(file, [recordOf("work"), recordOf("personal")], "work");
+    const tools = await listTools(deps);
+    const listed = tools.find((tool) => tool.name === "list_projects");
+    assert.match(JSON.stringify(listed?.inputSchema), /work, personal/);
   }));

@@ -15,6 +15,11 @@ import type { Targets } from "./routing.js";
 
 const SERVER_NAME = "multi-account-supabase-mcp";
 
+// The description of account_list while no account is registered. The client shows it in place of the usual one, so it
+// says why the Supabase tools are missing and how to add an account.
+const NO_ACCOUNTS_LIST_DESCRIPTION =
+  "No Supabase accounts are set up yet, so the Supabase tools are not listed. Add an account in a terminal with: multi-account-supabase-mcp add <name> --pat. Then list the tools again.";
+
 // What the server needs from the rest of the program. registry gives the accounts, and each call reads them again, so a
 // change takes effect at the next call. catalog gives the official tools. createServer reads it once.
 export type CallDeps = {
@@ -94,14 +99,18 @@ function toTool(tool: OfficialTool): Tool {
 // gets no new field.
 const syncedSignatures = new WeakMap<ChildPool, string>();
 
-// What a call compares with the last sync: the name, addedAt and gotrueId of each record, sorted by name. The token
-// and the default are not in it, and a change of default needs no child to close. Each record is written as a JSON
-// array, so two different sets of records never give the same text.
+// The server that createServer built for each pool. syncAccounts uses it to send the tool list change. A pool with no
+// server gets no notification, as in the tests that call the handlers with plain dependencies.
+const serverOf = new WeakMap<ChildPool, Server>();
+
+// What a call compares with the last sync: the name, addedAt and gotrueId of each record, in the order the registry lists
+// them. The token and the default are not in it, and a change of default needs no child to close. The order is part of
+// it, because the account argument lists the names in that order. Each record is written as a JSON array, so two
+// different lists of records never give the same text.
 function registrySignature(registry: Registry): string {
   return registry
     .list()
     .map((account): [string, string, string] => [account.name, account.addedAt, account.gotrueId])
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map((fields) => JSON.stringify(fields))
     .join("\n");
 }
@@ -109,22 +118,47 @@ function registrySignature(registry: Registry): string {
 // Closes the account children when the records have changed since the last sync. A removed account stops at the next
 // call, and a re-added one (a new gotrueId or addedAt) gets a new child with its own token. The reset empties the
 // account entries before it returns, so no later call gets an old child. The sync does not wait for the closes, so a
-// child that does not stop cannot hold up a call. closeAll still waits for them.
+// child that does not stop cannot hold up a call. closeAll still waits for them. A changed set of records also tells the
+// client that the tool list changed. The tell comes after the reset, so the list the client reads next is the new one.
 async function syncAccounts(deps: CallDeps, registry: Registry): Promise<void> {
   const signature = registrySignature(registry);
-  if (syncedSignatures.get(deps.pool) === signature) {
+  const earlier = syncedSignatures.get(deps.pool);
+  if (earlier === signature) {
     return;
   }
   syncedSignatures.set(deps.pool, signature);
   void deps.pool.resetAccounts();
+  // The first sync sends nothing, because the client has no earlier list to refresh.
+  if (earlier !== undefined) {
+    await announceToolListChanged(deps.pool);
+  }
 }
 
-// The tools of tools/list: the catalog with the account argument, the read-only query tool when it is exposed, and
-// account_list. The registry is read first, and the account children are synced to it before the catalog is read.
+// Sends the client the notification that the tool list changed. The transport may be closed, and a failed send must not
+// fail the call that made the sync, so the error is dropped.
+async function announceToolListChanged(pool: ChildPool): Promise<void> {
+  const server = serverOf.get(pool);
+  if (server === undefined) {
+    return;
+  }
+  try {
+    await server.sendToolListChanged();
+  } catch {
+    // The client keeps its old list until it asks for the list again.
+  }
+}
+
+// The tools of tools/list. With no accounts, the list is account_list alone, with the description that says why the
+// Supabase tools are missing, and the catalog is not read, because a catalog read starts a child. With accounts, the
+// list is the catalog with the account argument, the read-only query tool when it is exposed, and account_list. The
+// registry is read first, and the account children are synced to it before the catalog is read.
 export async function listTools(deps: CallDeps): Promise<Tool[]> {
   const registry = await deps.registry();
   await syncAccounts(deps, registry);
   const accounts = registry.names();
+  if (accounts.length === 0) {
+    return [{ ...ACCOUNT_LIST_TOOL, description: NO_ACCOUNTS_LIST_DESCRIPTION }];
+  }
   const catalog = await deps.catalog();
   const tools: OfficialTool[] = catalog.map((tool) => withAccountParam(tool, modeOf(tool.name), accounts));
   if (READONLY_QUERY_EXPOSED) {
@@ -268,7 +302,9 @@ function readOnce<T>(read: () => Promise<T>): () => Promise<T> {
 export function createServer(input: CallDeps): Server {
   const deps: CallDeps = { ...input, catalog: readOnce(input.catalog) };
   const version = readPackageVersion(fileURLToPath(new URL("../../package.json", import.meta.url)));
-  const server = new Server({ name: SERVER_NAME, version }, { capabilities: { tools: {} } });
+  // listChanged says that the tool list can change while the server runs, so a client can list it again when it is told.
+  const server = new Server({ name: SERVER_NAME, version }, { capabilities: { tools: { listChanged: true } } });
+  serverOf.set(input.pool, server);
   server.setRequestHandler("tools/list", async () => ({ tools: await listTools(deps) }));
   server.setRequestHandler("tools/call", async (request) =>
     handleCall(deps, request.params.name, request.params.arguments ?? {}),
