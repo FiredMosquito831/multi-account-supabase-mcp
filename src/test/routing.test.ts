@@ -8,7 +8,8 @@ import { resolveTargets } from "../mux/routing.js";
 
 const ADDED_AT = "2026-10-20T09:00:00.000Z";
 const NOT_A_STRING = 'account must be a string: one name, comma-separated names, or "all".';
-const NO_ACCOUNTS = "No Supabase accounts are set up yet. Run: multi-account-supabase-mcp add <name>";
+const NO_ACCOUNTS =
+  "No Supabase accounts are set up yet. Run in a terminal: multi-account-supabase-mcp add <name> --pat";
 
 // Loads a registry from a file in a temporary folder, then removes the folder. The registry is only read,
 // never saved, and no test touches the owner's data folder.
@@ -96,6 +97,11 @@ test("several unknown names are refused together, in the order given", () =>
     assert.throws(() => resolveTargets("nobody, work, ghost", registry), {
       message: "Unknown accounts: nobody, ghost. Known accounts: work, play.",
     });
+  }));
+
+test('"all" with one registered account is still several accounts, so multi is true', () =>
+  withRegistry(["work"], "work", (registry) => {
+    assert.deepEqual(resolveTargets("all", registry), { accounts: ["work"], multi: true });
   }));
 
 test("one name in a list gives multi false, with its spaces trimmed", () =>

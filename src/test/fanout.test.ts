@@ -44,6 +44,7 @@ test("a failed call does not stop the later items, and the fan-out rejects with 
 test("a call that fails while another is in flight: the fan-out waits, and rejects with the first error", async () => {
   const quickError = new Error("quick failure");
   const slowError = new Error("slow failure");
+  let slowStarted = false;
   let slowSettled = false;
   let slowRunningWhenQuickFailed = false;
   let slowSettledWhenRejected = false;
@@ -51,9 +52,10 @@ test("a call that fails while another is in flight: the fan-out waits, and rejec
   await mapWithLimit(["quick", "slow"], 2, async (item) => {
     if (item === "quick") {
       await sleep(5);
-      slowRunningWhenQuickFailed = !slowSettled;
+      slowRunningWhenQuickFailed = slowStarted && !slowSettled;
       throw quickError;
     }
+    slowStarted = true;
     await sleep(30);
     slowSettled = true;
     throw slowError;
@@ -61,6 +63,7 @@ test("a call that fails while another is in flight: the fan-out waits, and rejec
     rejectedWith = error;
     slowSettledWhenRejected = slowSettled;
   });
+  assert.equal(slowStarted, true, "the slow call must have started");
   assert.equal(slowRunningWhenQuickFailed, true, "the slow call must still be in flight when the quick one fails");
   assert.equal(slowSettledWhenRejected, true, "the slow call must settle before the promise rejects");
   assert.equal(rejectedWith, quickError, "the rejection must be the first error by identity, not the later one");

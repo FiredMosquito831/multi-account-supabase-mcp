@@ -11,6 +11,7 @@ import { FANOUT_LIMIT, mapWithLimit } from "./fanout.js";
 import { READONLY_QUERY_EXPOSED, READONLY_QUERY_TOOL, modeOf } from "./policy.js";
 import type { Mode } from "./policy.js";
 import { resolveTargets } from "./routing.js";
+import type { Targets } from "./routing.js";
 
 const SERVER_NAME = "multi-account-supabase-mcp";
 
@@ -37,8 +38,8 @@ const READONLY_QUERY_DEFINITION: OfficialTool = {
   annotations: { readOnlyHint: true },
 };
 
-// A miss is a not-found answer from one account. The pattern is the T2 rule's text match. It is used only on an error
-// result, so a successful result is never a miss.
+// A miss is a not-found answer from one account. The pattern is the text match for that answer. It is used only on an
+// error result, so a successful result is never a miss.
 const NOT_FOUND_PATTERN = /\b404\b|not found|does not exist|do not exist/i;
 
 export function looksNotFound(text: string): boolean {
@@ -59,11 +60,22 @@ const textResult = (text: string, isError: boolean): CallToolResult => ({
 const textOf = (result: CallToolResult): string =>
   result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 
+// The mode of a tool name. The read-only query tool is a lookup. Any other name takes its mode from the table, and
+// a name the table does not name is a change.
+const modeFor = (name: string): Mode => (name === READONLY_QUERY_TOOL ? "locate" : modeOf(name));
+
+// The text the pool gives when a call passes its limit. children.ts does not export it, so it is copied here. The
+// timeout test checks this copy against the pool's own message.
+const POOL_TIMEOUT_TEXT = "Supabase did not answer in time (limit: 15 minutes).";
+
+// Added to the text of a change that timed out, because the change may have run on the official server anyway.
+const CHANGE_MAY_HAVE_HAPPENED = "The change may still have happened. Check before you retry.";
+
 // The refusal for a change that does not name one account. The example names one account, when there is one.
 const oneAccountRefusal = (tool: string, example: string | undefined): string => {
   const head = `"${tool}" runs on one account only, because it can change data or is not classified yet.`;
   return example === undefined
-    ? `${head} No Supabase accounts are set up yet. Run: multi-account-supabase-mcp add <name>`
+    ? `${head} No Supabase accounts are set up yet. Run in a terminal: multi-account-supabase-mcp add <name> --pat`
     : `${head} Name one account, for example account: "${example}".`;
 };
 
@@ -89,65 +101,77 @@ export async function listTools(deps: CallDeps): Promise<Tool[]> {
   return [...tools.map(toTool), ACCOUNT_LIST_TOOL];
 }
 
-// Runs one tool call. An error from any step becomes an error result that carries its message.
+// Runs one tool call. An error from any step becomes an error result that carries its message. A change that timed out
+// gets one more sentence, because the change may still have happened.
 export async function handleCall(deps: CallDeps, name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   try {
     return await route(deps, name, args);
   } catch (error) {
-    return textResult(messageOf(error), true);
+    const text = messageOf(error);
+    const timedOutChange = modeFor(name) === "one" && text === POOL_TIMEOUT_TEXT;
+    return textResult(timedOutChange ? `${text} ${CHANGE_MAY_HAVE_HAPPENED}` : text, true);
   }
 }
 
-// The steps of a call, in order. The first step that applies decides.
+// The steps of a call, in order. The first step that applies decides. A change is checked before the catalog is
+// read, so a refused change starts no child.
 async function route(deps: CallDeps, name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   // 1. account_list needs only the registry.
   if (name === ACCOUNT_LIST_NAME) {
     return textResult(accountListText(await deps.registry()), false);
   }
 
-  // 2. The name must be in the catalog. The read-only query tool counts only while it is exposed.
+  // 2. The account argument belongs to the server. Everything else goes to the child as it is. The mode comes from the
+  // static table, so it is known before any child starts.
+  const { account, ...rest } = args;
+  const mode = modeFor(name);
+  const officialName = name === READONLY_QUERY_TOOL ? "execute_sql" : name;
+
+  // 3. A change must name one account. A missing name, or a blank one, is refused before any account is contacted,
+  // because a change never runs without a named account. The example is the default account, or the first account when
+  // there is no default. A name for several accounts, or for all of them, is refused as well. An unknown tool name is a
+  // change too, because the table does not name it, so this step runs before the catalog is read.
+  let targets: Targets | undefined;
+  if (mode === "one") {
+    const registry = await deps.registry();
+    const blank = account === undefined || (typeof account === "string" && account.trim() === "");
+    if (blank) {
+      const first: string | undefined = registry.names()[0];
+      return textResult(oneAccountRefusal(name, registry.defaultName() ?? first), true);
+    }
+    targets = resolveTargets(account, registry);
+    // A change never goes to several accounts. The refusal names the first account of the list.
+    if (targets.multi) {
+      return textResult(oneAccountRefusal(name, targets.accounts[0]), true);
+    }
+  }
+
+  // 4. The name must be in the catalog. The read-only query tool counts only while it is exposed.
   const catalog = await deps.catalog();
   const known = name === READONLY_QUERY_TOOL ? READONLY_QUERY_EXPOSED : catalog.some((tool) => tool.name === name);
   if (!known) {
     return textResult(`Unknown tool "${name}".`, true);
   }
 
-  // 3. The account argument belongs to the server. Everything else goes to the child as it is.
-  const { account, ...rest } = args;
-  const mode: Mode = name === READONLY_QUERY_TOOL ? "locate" : modeOf(name);
-  const officialName = name === READONLY_QUERY_TOOL ? "execute_sql" : name;
-
-  // 4. A tool of mode none runs on the placeholder child, and its result is returned unchanged.
+  // 5. A tool of mode none runs on the placeholder child, and its result is returned unchanged.
   if (mode === "none") {
     const child = await deps.pool.placeholder();
     return child.callTool(officialName, rest, TOOL_TIMEOUT_MS);
   }
 
-  // 5. A change must name one account. A missing name, or a blank one, is refused before any account is contacted
-  // (S10). The example is the default account, or the first account when there is no default.
-  const blank = account === undefined || (typeof account === "string" && account.trim() === "");
-  if (mode === "one" && blank) {
-    const registry = await deps.registry();
-    const first: string | undefined = registry.names()[0];
-    return textResult(oneAccountRefusal(name, registry.defaultName() ?? first), true);
+  // 6. A read names one account, several, or all of them. An unknown name is refused here.
+  if (targets === undefined) {
+    targets = resolveTargets(account, await deps.registry());
   }
 
-  // 6. The argument names one account, several, or all of them. An unknown name is refused here.
-  const targets = resolveTargets(account, await deps.registry());
-
-  // 7. A change never goes to several accounts. The refusal names the first account of the list.
-  if (targets.multi && mode === "one") {
-    return textResult(oneAccountRefusal(name, targets.accounts[0]), true);
-  }
-
-  // 8. One account. A change uses the writable child, and every other mode uses the read-only one.
+  // 7. One account. A change uses the writable child, and every other mode uses the read-only one.
   if (!targets.multi) {
     const [only] = targets.accounts;
     const child = mode === "one" ? await deps.pool.write(only) : await deps.pool.read(only);
     return child.callTool(officialName, rest, TOOL_TIMEOUT_MS);
   }
 
-  // 9. Several accounts, at most FANOUT_LIMIT at a time. Each account's error is caught here and kept as its outcome,
+  // 8. Several accounts, at most FANOUT_LIMIT at a time. Each account's error is caught here and kept as its outcome,
   // so one failure does not hide the others. The fan-out itself never rejects.
   const outcomes = await mapWithLimit(targets.accounts, FANOUT_LIMIT, async (accountName): Promise<Outcome> => {
     try {
@@ -156,7 +180,7 @@ async function route(deps: CallDeps, name: string, args: Record<string, unknown>
       if (result.isError !== true) {
         return { kind: "ok", result };
       }
-      // A miss needs the error flag, the locate mode and the not-found text (T2).
+      // A miss needs the error flag, the locate mode and the not-found text.
       const text = textOf(result);
       return mode === "locate" && looksNotFound(text) ? { kind: "miss" } : { kind: "fail", error: text };
     } catch (error) {
@@ -164,7 +188,7 @@ async function route(deps: CallDeps, name: string, args: Record<string, unknown>
     }
   });
 
-  // 10. The answer. Every account missing is an error with one line. Every account failing is an error with the JSON
+  // 9. The answer. Every account missing is an error with one line. Every account failing is an error with the JSON
   // document. Otherwise the answer is the JSON document, and the misses are listed in notFoundIn.
   if (outcomes.every((outcome) => outcome.kind === "miss")) {
     return textResult(`Not found in any account: ${targets.accounts.join(", ")}.`, true);
@@ -204,7 +228,7 @@ function readOnce<T>(read: () => Promise<T>): () => Promise<T> {
 }
 
 // The MCP server. It answers tools/list with listTools and tools/call with handleCall. The catalog is read once for the
-// life of the server (R31), because each read of the pool's catalog starts and closes a child.
+// life of the server, because each read of the pool's catalog starts and closes a child.
 export function createServer(input: CallDeps): Server {
   const deps: CallDeps = { ...input, catalog: readOnce(input.catalog) };
   const version = readPackageVersion(fileURLToPath(new URL("../../package.json", import.meta.url)));

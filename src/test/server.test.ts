@@ -43,7 +43,7 @@ const oneAccountText = (tool: string, example: string): string =>
   `"${tool}" runs on one account only, because it can change data or is not classified yet. Name one account, for example account: "${example}".`;
 
 const oneAccountNoAccountsText = (tool: string): string =>
-  `"${tool}" runs on one account only, because it can change data or is not classified yet. No Supabase accounts are set up yet. Run: multi-account-supabase-mcp add <name>`;
+  `"${tool}" runs on one account only, because it can change data or is not classified yet. No Supabase accounts are set up yet. Run in a terminal: multi-account-supabase-mcp add <name> --pat`;
 
 // Loads a registry from a file that this helper writes in a new temporary folder, then removes the folder. The
 // registry is only read, never saved, so no test touches the owner's data folder.
@@ -113,6 +113,36 @@ function depsFor(registry: Registry, respond: Respond) {
 const ok = (text: string): CallToolResult => ({ content: [{ type: "text", text }] });
 const failed = (text: string): CallToolResult => ({ content: [{ type: "text", text }], isError: true });
 
+// Deps whose pool counts every child start, the catalog's included. The catalog is read through the pool, so reading it
+// starts a child and is counted.
+function countingDeps(registry: Registry) {
+  const counter = { starts: 0 };
+  const start: StartChild = async () => {
+    counter.starts += 1;
+    return {
+      listTools: async () => CATALOG,
+      callTool: async () => ok("unused"),
+      isAlive: () => true,
+      close: async () => undefined,
+    };
+  };
+  const pool = new ChildPool(start, { tokenFor: async () => "unused" });
+  const deps: CallDeps = { registry: async () => registry, pool, catalog: () => pool.catalog() };
+  return { deps, counter };
+}
+
+// A pool whose children never answer a call. Its call limit is 20 milliseconds, so the pool's timeout is reached
+// at once.
+function silentPool(): ChildPool {
+  const start: StartChild = async () => ({
+    listTools: async () => CATALOG,
+    callTool: () => new Promise<CallToolResult>(() => undefined),
+    isAlive: () => true,
+    close: async () => undefined,
+  });
+  return new ChildPool(start, { toolTimeoutMs: 20, tokenFor: async (account) => `fake-value-${account}` });
+}
+
 // The text of the first content block. A result whose first block is not text fails the test.
 function textOf(result: CallToolResult): string {
   const [block] = result.content;
@@ -140,12 +170,21 @@ async function connectedClient(deps: CallDeps): Promise<{ client: Client; close:
   };
 }
 
-test("a name that is not in the catalog is an unknown tool, and no child is started", () =>
+test("a name that is not in the catalog is an unknown tool when a named account is given, and no child is started", () =>
+  withRegistry(["work"], "work", async (registry) => {
+    const { deps, specs } = depsFor(registry, () => ok("unused"));
+    const result = await handleCall(deps, "nope", { account: "work" });
+    assert.equal(result.isError, true);
+    assert.equal(textOf(result), 'Unknown tool "nope".');
+    assert.deepEqual(specs, []);
+  }));
+
+test("a name that is not in the catalog with no account is refused as a change, because its mode is one, and no child is started", () =>
   withRegistry(["work"], "work", async (registry) => {
     const { deps, specs } = depsFor(registry, () => ok("unused"));
     const result = await handleCall(deps, "nope", {});
     assert.equal(result.isError, true);
-    assert.equal(textOf(result), 'Unknown tool "nope".');
+    assert.equal(textOf(result), oneAccountText("nope", "work"));
     assert.deepEqual(specs, []);
   }));
 
@@ -165,7 +204,7 @@ test("list_projects with no account and a default work reads only work, and retu
     assert.deepEqual(specs, [{ account: "work", readOnly: true, token: "fake-value-work" }]);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].name, "list_projects");
-    // R32: every call passes the pool's full limit, so the shared child is never closed by a shorter timeout.
+    // Every call passes the pool's full limit, so the shared child is never closed by a shorter timeout.
     assert.equal(calls[0].timeoutMs, TOOL_TIMEOUT_MS);
   }));
 
@@ -179,7 +218,7 @@ test('list_projects with account "all" reads each account once, and the text lis
     assert.deepEqual(doc.notFoundIn, []);
     assert.deepEqual(calls.map((call) => call.spec.account).sort(), ["personal", "work"]);
     assert.ok(specs.every((spec) => spec.readOnly));
-    assert.ok(calls.every((call) => call.timeoutMs === TOOL_TIMEOUT_MS), "every fan-out call uses the full limit (R32)");
+    assert.ok(calls.every((call) => call.timeoutMs === TOOL_TIMEOUT_MS), "every fan-out call uses the full limit");
   }));
 
 test('create_project with account "work,personal" is refused with the several-accounts message, and no child is started', () =>
@@ -191,7 +230,7 @@ test('create_project with account "work,personal" is refused with the several-ac
     assert.deepEqual(specs, []);
   }));
 
-test("create_project with no account and a default is refused with the one-account message, and no write is made (S10)", () =>
+test("create_project with no account and a default is refused with the one-account message, and no write is made", () =>
   withRegistry(["work", "personal"], "work", async (registry) => {
     const { deps, specs } = depsFor(registry, () => ok("unused"));
     const result = await handleCall(deps, "create_project", {});
@@ -234,7 +273,7 @@ test("a single account that does not have the id gets the child's own error, unc
     assert.strictEqual(result, reply);
   }));
 
-test('a successful result whose text holds 404 is not a miss, so the account stays under accounts with ok true (T2)', () =>
+test('a successful result whose text holds 404 is not a miss, so the account stays under accounts with ok true', () =>
   withRegistry(["work", "personal"], "work", async (registry) => {
     const { deps } = depsFor(registry, (spec) => (spec.account === "personal" ? ok('{"status": 404}') : ok("found")));
     const result = await handleCall(deps, "get_project", { account: "all", id: "p1" });
@@ -279,7 +318,7 @@ test("when every account's call throws, the result is an error whose text is the
 test('"constructor" is an unknown tool, not an inherited property, and no child is started', () =>
   withRegistry(["work"], "work", async (registry) => {
     const { deps, specs } = depsFor(registry, () => ok("unused"));
-    const result = await handleCall(deps, "constructor", {});
+    const result = await handleCall(deps, "constructor", { account: "work" });
     assert.equal(result.isError, true);
     assert.equal(textOf(result), 'Unknown tool "constructor".');
     assert.deepEqual(specs, []);
@@ -316,7 +355,7 @@ test("a name that is not an account is refused with the known names, and no chil
     assert.deepEqual(specs, []);
   }));
 
-test("a change with a blank account is refused as one that names no account (S10)", () =>
+test("a change with a blank account is refused as one that names no account", () =>
   withRegistry(["work", "personal"], "work", async (registry) => {
     const { deps, specs } = depsFor(registry, () => ok("unused"));
     const result = await handleCall(deps, "create_project", { account: "   " });
@@ -360,6 +399,88 @@ test("a lookup that no account can answer says so once, and lists every account"
     assert.equal(textOf(result), "Not found in any account: work, personal.");
   }));
 
+test("a refused change starts no child, and the catalog child is not started either", () =>
+  withRegistry(["work", "personal"], "work", async (registry) => {
+    const { deps, counter } = countingDeps(registry);
+    for (const args of [{}, { account: "   " }, { account: "all" }, { account: "work,personal" }]) {
+      const result = await handleCall(deps, "create_project", args);
+      assert.equal(result.isError, true, JSON.stringify(args));
+      assert.equal(textOf(result), oneAccountText("create_project", "work"), JSON.stringify(args));
+      assert.equal(counter.starts, 0, `no child is started for ${JSON.stringify(args)}`);
+    }
+  }));
+
+test("a change that passes the pool's limit tells the agent that the change may still have happened", () =>
+  withRegistry(["work"], "work", async (registry) => {
+    const pool = silentPool();
+    const deps: CallDeps = { registry: async () => registry, pool, catalog: async () => CATALOG };
+    try {
+      const result = await handleCall(deps, "create_project", { account: "work", name: "demo" });
+      assert.equal(result.isError, true);
+      assert.equal(
+        textOf(result),
+        "Supabase did not answer in time (limit: 15 minutes). The change may still have happened. Check before you retry.",
+      );
+    } finally {
+      await pool.closeAll();
+    }
+  }));
+
+test("a read that passes the pool's limit gets the timeout text alone", () =>
+  withRegistry(["work"], "work", async (registry) => {
+    const pool = silentPool();
+    const deps: CallDeps = { registry: async () => registry, pool, catalog: async () => CATALOG };
+    try {
+      const result = await handleCall(deps, "list_projects", { account: "work" });
+      assert.equal(result.isError, true);
+      assert.equal(textOf(result), "Supabase did not answer in time (limit: 15 minutes).");
+    } finally {
+      await pool.closeAll();
+    }
+  }));
+
+test("a change that names an account nobody has, or a value that is not text, is refused, and no child starts", () =>
+  withRegistry(["work", "personal"], "work", async (registry) => {
+    const { deps, specs } = depsFor(registry, () => ok("unused"));
+    const unknown = await handleCall(deps, "create_project", { account: "nobody" });
+    assert.equal(unknown.isError, true);
+    assert.equal(textOf(unknown), "Unknown account: nobody. Known accounts: work, personal.");
+    const notText = await handleCall(deps, "create_project", { account: 5 });
+    assert.equal(notText.isError, true);
+    assert.equal(textOf(notText), 'account must be a string: one name, comma-separated names, or "all".');
+    assert.deepEqual(specs, []);
+  }));
+
+test('a change with account "all" is refused when only one account is registered, and no child starts', () =>
+  withRegistry(["work"], "work", async (registry) => {
+    const { deps, specs } = depsFor(registry, () => ok("unused"));
+    const result = await handleCall(deps, "create_project", { account: "all" });
+    assert.equal(result.isError, true);
+    assert.equal(textOf(result), oneAccountText("create_project", "work"));
+    assert.deepEqual(specs, []);
+  }));
+
+test("a not-found answer under a tool of mode all is a failure, not a miss, so the account stays under accounts", () =>
+  withRegistry(["work", "personal"], "work", async (registry) => {
+    const reply = ok("projects");
+    const { deps } = depsFor(registry, (spec) => (spec.account === "personal" ? failed("Project not found") : reply));
+    const result = await handleCall(deps, "list_projects", { account: "all" });
+    assert.equal(result.isError, false);
+    const doc = docOf(result);
+    assert.deepEqual(doc.notFoundIn, []);
+    assert.deepEqual(doc.accounts.personal, { ok: false, error: "Project not found" });
+    assert.deepEqual(doc.accounts.work, { ok: true, result: reply });
+  }));
+
+test("account_list starts no child, and does not read the catalog", () =>
+  withRegistry(["work"], "work", async (registry) => {
+    const { deps, counter } = countingDeps(registry);
+    const result = await handleCall(deps, "account_list", {});
+    assert.notEqual(result.isError, true);
+    assert.equal(textOf(result), "*work\twork@example.com\tpat");
+    assert.equal(counter.starts, 0, "no child is started");
+  }));
+
 test("looksNotFound matches the not-found words and the whole number 404, and nothing else", () => {
   for (const text of ["Project not found", "HTTP 404", "The project does not exist", "They do not exist"]) {
     assert.equal(looksNotFound(text), true, text);
@@ -387,7 +508,10 @@ test("accountListText with no default ends with the line that says so", () =>
 
 test("accountListText with no accounts gives the add line only", () =>
   withRegistry([], null, async (registry) => {
-    assert.equal(accountListText(registry), "No accounts yet. Add one with: multi-account-supabase-mcp add <name>");
+    assert.equal(
+      accountListText(registry),
+      "No accounts yet. Add one in a terminal with: multi-account-supabase-mcp add <name> --pat",
+    );
   }));
 
 test("listTools gives the catalog with the account argument, then account_list, and no read-only query tool", () =>

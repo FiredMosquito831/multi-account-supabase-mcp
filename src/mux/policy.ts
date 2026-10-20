@@ -1,7 +1,7 @@
 export type Mode = "none" | "all" | "locate" | "one";
 
 // A Map, not an object literal. Names inherited from Object.prototype (constructor, toString, __proto__)
-// are not keys of a Map, so modeOf gives them "one" (defect T1 of the Netlify template).
+// are not keys of a Map, so modeOf gives them "one". The Netlify template had this defect with an object literal.
 export const OPERATION_MODES: ReadonlyMap<string, Mode> = new Map<string, Mode>([
   ["search_docs", "none"],
   ["list_organizations", "all"],
@@ -42,6 +42,7 @@ export const OPERATION_MODES: ReadonlyMap<string, Mode> = new Map<string, Mode>(
 // An operation the table does not classify is "one", so a change never goes to several accounts.
 export const modeOf = (tool: string): Mode => OPERATION_MODES.get(tool) ?? "one";
 
-// The read-only query tool (decision S3). It is not listed until its F17 check passes.
+// The read-only query tool, which the owner chose to add. It is not listed until a live check shows that the API
+// enforces read-only.
 export const READONLY_QUERY_TOOL = "execute_sql_readonly";
 export const READONLY_QUERY_EXPOSED = false;

@@ -12,7 +12,9 @@ export function resolveTargets(argument: unknown, registry: Registry): Targets {
   }
   const names = registry.names();
   if (names.length === 0) {
-    throw new Error("No Supabase accounts are set up yet. Run: multi-account-supabase-mcp add <name>");
+    throw new Error(
+      "No Supabase accounts are set up yet. Run in a terminal: multi-account-supabase-mcp add <name> --pat",
+    );
   }
   const text = typeof argument === "string" ? argument.trim() : "";
   if (text === "") {

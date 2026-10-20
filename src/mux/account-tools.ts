@@ -17,7 +17,7 @@ export const ACCOUNT_LIST_TOOL: Tool = {
 export function accountListText(registry: Registry): string {
   const accounts = registry.list();
   if (accounts.length === 0) {
-    return "No accounts yet. Add one with: multi-account-supabase-mcp add <name>";
+    return "No accounts yet. Add one in a terminal with: multi-account-supabase-mcp add <name> --pat";
   }
   const defaultName = registry.defaultName();
   const lines = accounts.map(

@@ -23,8 +23,15 @@ const NO_TOKEN_WORK =
 // The source folder, reached from the compiled test in dist/test.
 const SOURCE = fileURLToPath(new URL("../../src/", import.meta.url));
 
-// Text that writes to stdout. Stdout carries the protocol in serve mode, so none of these may appear in a protocol file.
-const FORBIDDEN = ["console.log(", "console.info(", "console.debug(", "console.dir(", "console.table(", "process.stdout"];
+// Text that writes to stdout, in any spacing form. Stdout carries the protocol in serve mode, so none of these may
+// appear in a protocol file. The console members listed write to stdout. console.error, console.warn and console.trace
+// write to stderr, so they are not listed. A reference to process.stdout matches without a call after it.
+const FORBIDDEN: RegExp[] = [
+  /\bconsole\s*\??\.\s*(?:log|info|debug|dir|dirxml|table|group|groupCollapsed|count|timeEnd|timeLog)\s*\(/,
+  /\bconsole\s*\??\.?\s*\[\s*(["'`])(?:log|info|debug|dir|dirxml|table|group|groupCollapsed|count|timeEnd|timeLog)\1\s*\]/,
+  /\bprocess\s*\??\.\s*stdout\b/,
+  /\bprocess\s*\??\.?\s*\[\s*(["'`])stdout\1\s*\]/,
+];
 
 // The .ts files that run in serve mode: the folders mux, accounts, secrets and supabase, and serve.ts. src/test is not
 // scanned.
@@ -40,7 +47,7 @@ async function protocolFiles(): Promise<string[]> {
   return files;
 }
 
-test("no protocol file contains a text that writes to stdout", async () => {
+test("no protocol file contains a text that writes to stdout, in any spacing form", async () => {
   const files = await protocolFiles();
   // A scan that reached too few files would pass for the wrong reason, so the two files that matter most are checked.
   assert.ok(files.includes(path.join(SOURCE, "serve.ts")), "serve.ts must be scanned");
@@ -49,12 +56,33 @@ test("no protocol file contains a text that writes to stdout", async () => {
   for (const file of files) {
     const text = await readFile(file, "utf8");
     for (const forbidden of FORBIDDEN) {
-      if (text.includes(forbidden)) {
-        hits.push(`${path.relative(SOURCE, file)} contains ${forbidden}`);
+      if (forbidden.test(text)) {
+        hits.push(`${path.relative(SOURCE, file)} matches ${forbidden.source}`);
       }
     }
   }
   assert.deepEqual(hits, []);
+});
+
+test("the stdout patterns catch the spacing forms of the stdout writers, and leave the stderr writers alone", () => {
+  const writesToStdout = [
+    'console.log("x")',
+    'console .log ("x")',
+    "console\n  .groupCollapsed('x')",
+    'console["timeLog"]("x")',
+    "console['count']()",
+    "console.dirxml(x)",
+    'globalThis?.console?.log("x")',
+    'process.stdout.write("x")',
+    'process ["stdout"].write("x")',
+  ];
+  const writesToStderr = ['console.error("x")', 'console.warn("x")', 'console.trace("x")', "process.stderr.write('x')"];
+  for (const text of writesToStdout) {
+    assert.ok(FORBIDDEN.some((pattern) => pattern.test(text)), `must be caught: ${text}`);
+  }
+  for (const text of writesToStderr) {
+    assert.equal(FORBIDDEN.some((pattern) => pattern.test(text)), false, `must not be caught: ${text}`);
+  }
 });
 
 // Loads a real registry from a file that this helper writes in a new temporary folder, then removes the folder. The
@@ -138,6 +166,40 @@ test("tools/list over the in-memory transport lists account_list and the catalog
       }
       assert.equal(Object.hasOwn(propertiesOf("account_list"), "account"), false);
       assert.equal(starts, 0, "listing the tools starts no child");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  }));
+
+test("a tool the policy does not name counts as a change: all and a list are refused over the protocol, and no child starts", () =>
+  withRegistry(["work", "personal"], "work", async (registry) => {
+    let starts = 0;
+    const start: StartChild = async () => {
+      starts += 1;
+      throw new Error("no child may start in this test");
+    };
+    const deps: CallDeps = {
+      registry: async () => registry,
+      pool: new ChildPool(start, { tokenFor: async () => "unused" }),
+      catalog: async () => CATALOG,
+    };
+    const server = createServer(deps);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "serve-test-client", version: "0.0.0" });
+    await client.connect(clientTransport);
+    try {
+      for (const account of ["all", "work,personal"]) {
+        const result = await client.callTool({ name: "future_tool", arguments: { account } });
+        assert.equal(result.isError, true, account);
+        const [block] = result.content;
+        assert.ok(
+          block !== undefined && block.type === "text" && block.text.includes("runs on one account only"),
+          account,
+        );
+      }
+      assert.equal(starts, 0, "no child starts");
     } finally {
       await client.close();
       await server.close();
