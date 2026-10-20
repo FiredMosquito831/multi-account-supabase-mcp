@@ -11,10 +11,14 @@ import { ChildPool, TOOL_TIMEOUT_MS } from "../mux/children.js";
 import type { ChildClient, ChildSpec, OfficialTool, StartChild } from "../mux/children.js";
 import { createServer } from "../mux/server.js";
 import type { CallDeps } from "../mux/server.js";
-import { MemoryTokenStore } from "../secrets/token-store.js";
+import { MemoryTokenStore, type TokenStore } from "../secrets/token-store.js";
 import { buildCallDeps } from "../serve.js";
 
 const ADDED_AT = "2026-10-20T09:00:00.000Z";
+
+// The refusal for an account with no usable stored token. The tests that use it name the account "work".
+const NO_TOKEN_WORK =
+  'No token is stored for the account "work". Run multi-account-supabase-mcp remove work, then add the account again with --pat in a terminal.';
 
 // The source folder, reached from the compiled test in dist/test.
 const SOURCE = fileURLToPath(new URL("../../src/", import.meta.url));
@@ -162,7 +166,7 @@ test("a read takes its token from the store and uses the full tool timeout, and 
       return silentChild(timeouts);
     };
     const deps = buildCallDeps({ registry, tokens, start });
-    await assert.rejects(deps.pool.read("work"), /No token is stored for the account "work"/);
+    await assert.rejects(deps.pool.read("work"), { message: NO_TOKEN_WORK });
     assert.deepEqual(specs, []);
 
     await tokens.set("work", "stored-value");
@@ -172,6 +176,23 @@ test("a read takes its token from the store and uses the full tool timeout, and 
     await child.callTool("list_projects", {}, 2 * TOOL_TIMEOUT_MS);
     assert.deepEqual(timeouts, [TOOL_TIMEOUT_MS]);
     await deps.pool.closeAll();
+  }));
+
+test("an empty stored token counts as missing: the call is refused with the same message, and no child starts", () =>
+  withRegistry(["work"], "work", async (registry) => {
+    let starts = 0;
+    const start: StartChild = async () => {
+      starts += 1;
+      throw new Error("no child may start in this test");
+    };
+    const tokens: TokenStore = {
+      get: async () => "",
+      set: async () => undefined,
+      delete: async () => undefined,
+    };
+    const deps = buildCallDeps({ registry, tokens, start });
+    await assert.rejects(deps.pool.read("work"), { message: NO_TOKEN_WORK });
+    assert.equal(starts, 0);
   }));
 
 // A child that answers every call with "ok" and records the timeout of each call.

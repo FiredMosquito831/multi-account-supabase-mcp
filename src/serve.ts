@@ -1,4 +1,4 @@
-import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { serveStdio as sdkServeStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import type { Registry } from "./accounts/registry.js";
 import { ChildPool, TOOL_TIMEOUT_MS } from "./mux/children.js";
 import type { StartChild } from "./mux/children.js";
@@ -17,9 +17,11 @@ export function buildCallDeps(options: CallDepsOptions): CallDeps {
     toolTimeoutMs: TOOL_TIMEOUT_MS,
     tokenFor: async (account) => {
       const token = await options.tokens.get(account);
-      // Without a stored token no child can start, so the call fails with this message.
-      if (token === undefined) {
-        throw new Error(`No token is stored for the account "${account}".`);
+      // An empty value is not a token, so it counts as missing, and no child starts.
+      if (token === undefined || token === "") {
+        throw new Error(
+          `No token is stored for the account "${account}". Run multi-account-supabase-mcp remove ${account}, then add the account again with --pat in a terminal.`,
+        );
       }
       return token;
     },
@@ -32,18 +34,25 @@ export function buildCallDeps(options: CallDepsOptions): CallDeps {
   };
 }
 
-// Serves the MCP server over the stdio transport. The promise resolves when the transport closes, which happens when the
-// client closes stdin, and the pool's children are closed before it resolves. Nothing is written to stdout here: the SDK
-// writes the replies there, and any other text would break the protocol.
+// Serves the MCP server over stdio. The SDK's helper picks the protocol era from the first message. It returns a handle
+// at once, and it does not wait for the transport to close, so the promise here resolves when the transport closes. That
+// happens when the client closes stdin. The pool's children are closed before the promise resolves. Nothing is written to
+// stdout here.
 export async function serveStdio(deps: CallDeps): Promise<void> {
-  const server = createServer(deps);
+  const transport = new StdioServerTransport();
+  const handle = sdkServeStdio(() => createServer(deps), { transport });
+  // The helper has set its own onclose on the transport. This hook runs after it, then resolves the promise.
   const closed = new Promise<void>((resolve) => {
-    server.onclose = () => resolve();
+    const onSdkClose = transport.onclose;
+    transport.onclose = () => {
+      onSdkClose?.();
+      resolve();
+    };
   });
   try {
-    await server.connect(new StdioServerTransport());
     await closed;
   } finally {
+    await handle.close();
     await deps.pool.closeAll();
   }
 }

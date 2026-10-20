@@ -4,7 +4,6 @@ import path from "node:path";
 import { Registry } from "./accounts/registry.js";
 import { dataFolder } from "./paths.js";
 import { type CliIo, runCli } from "./run.js";
-import { buildCallDeps, serveStdio } from "./serve.js";
 import { KeyringTokenStore, type TokenStore } from "./secrets/token-store.js";
 import { type FetchLike, fetchProfile } from "./supabase/api.js";
 
@@ -70,9 +69,12 @@ const readSecret = async (): Promise<string> => {
   }
 };
 
-// Loads the registry once, then serves the MCP server over stdio until the client closes stdin. The registry is not read
-// again during the session, so an account added while the server runs is not used until the server restarts.
+// Loads the registry once, then serves the MCP server over stdio until the client closes stdin. The server module is
+// loaded here, so the other commands never load the MCP SDK. The registry is read only at this start. So an account added
+// while the server runs is not used until the server restarts, and a removed account's running child keeps its token until
+// the server restarts.
 const serveFromRegistryFile = async (registryFile: string, tokens: TokenStore): Promise<void> => {
+  const { buildCallDeps, serveStdio } = await import("./serve.js");
   const registry = await Registry.load(registryFile);
   await serveStdio(buildCallDeps({ registry, tokens }));
 };
