@@ -131,3 +131,35 @@ test("a save that fails removes the record and the token, and rethrows the save 
     assert.equal(registry.defaultName(), null);
     assert.equal(await tokens.get("work"), undefined);
   }));
+
+test("a failed save and a failed token removal reject with the save error, and warn once without the token or the removal error", () =>
+  inTempFolder(async (folder) => {
+    const registry = await Registry.load(path.join(folder, "accounts.json"));
+    const saveError = new Error("The save failed.");
+    registry.save = async () => {
+      throw saveError;
+    };
+    // The removal error holds the token on purpose, so the test shows that the warning repeats neither.
+    const deleteError = new Error(`The credential store refused to remove ${FAKE_TOKEN}.`);
+    const tokens = new MemoryTokenStore();
+    tokens.delete = async () => {
+      throw deleteError;
+    };
+    const warnings: string[] = [];
+    await assert.rejects(
+      addAccount(
+        {
+          ...depsFor(registry, tokens, async () => profileOf("gotrue-work", "work@example.com")),
+          warn: (message) => {
+            warnings.push(message);
+          },
+        },
+        "work",
+        FAKE_TOKEN,
+      ),
+      (error: unknown) => error === saveError,
+    );
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].includes(FAKE_TOKEN), false);
+    assert.equal(warnings[0].includes(deleteError.message), false);
+  }));

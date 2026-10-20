@@ -3,20 +3,27 @@ import type { Profile } from "../supabase/api.js";
 import { assertValidName } from "./names.js";
 import type { AccountRecord, Registry } from "./registry.js";
 
+// The default warning. It goes to stderr, because stdout carries the MCP protocol in serve mode.
+const writeToStderr = (message: string): void => {
+  process.stderr.write(`${message}\n`);
+};
+
 // Adds one account. The identity check is passed in, so this flow never picks a URL, and the token goes only
 // to the check and to the token store. If the save fails, the record and the token are removed again, and the
-// save error is rethrown.
+// save error is rethrown. If the token cannot be removed, warn gets a fixed message, and the save error is still
+// the one that is thrown.
 export const addAccount = async (
   deps: {
     registry: Registry;
     tokens: TokenStore;
     fetchProfile: (token: string) => Promise<Profile>;
     addedAt: () => string;
+    warn?: (message: string) => void;
   },
   name: string,
   token: string,
 ): Promise<AccountRecord> => {
-  const { registry, tokens, fetchProfile, addedAt } = deps;
+  const { registry, tokens, fetchProfile, addedAt, warn = writeToStderr } = deps;
   assertValidName(name);
   if (token === "") {
     throw new Error("No token was given.");
@@ -43,7 +50,14 @@ export const addAccount = async (
     await registry.save();
   } catch (error) {
     registry.remove(name);
-    await tokens.delete(name);
+    try {
+      await tokens.delete(name);
+    } catch {
+      // The warning holds the account name only, never the token or the error text.
+      warn(
+        `The token for ${name} could not be removed after a failed save. Remove it with: multi-account-supabase-mcp remove ${name}`,
+      );
+    }
     throw error;
   }
   return record;
