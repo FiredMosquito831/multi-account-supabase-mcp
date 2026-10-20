@@ -362,7 +362,7 @@ Message: `feat: check a token with GET /v1/profile, fail closed` with the cases,
 
 **Interfaces:**
 - Consumes: `Registry`, `AccountRecord` (Task 5); `TokenStore` (Task 6); `Profile` (Task 7); `assertValidName` (Task 4).
-- Produces: `addAccount(deps: { registry: Registry; tokens: TokenStore; fetchProfile: (token: string) => Promise<Profile>; addedAt: () => string }, name: string, token: string): Promise<AccountRecord>`.
+- Produces: `addAccount(deps: { registry: Registry; tokens: TokenStore; fetchProfile: (token: string) => Promise<Profile>; addedAt: () => string; warn?: (message: string) => void }, name: string, token: string): Promise<AccountRecord>` (`warn` is optional, ruling R23; its default writes to stderr).
 
 Order of work, exactly: (1) `assertValidName(name)`; (2) if `token` is empty, throw `No token was given.`; (3) if `registry.get(name)` exists, throw the existing-name message from Task 5; (4) `profile = await fetchProfile(token)`; (5) if `registry.findByGotrueId(profile.gotrueId)` exists, throw the duplicate message from Task 5; (6) `await tokens.set(name, token)`; (7) `registry.add({ name, email: profile.email, gotrueId: profile.gotrueId, added: "pat", addedAt: deps.addedAt() })`; (8) `try { await registry.save() } catch (error) { registry.remove(name); await tokens.delete(name); throw error; }`; return the record.
 
@@ -578,7 +578,7 @@ Message: `feat: add the MCP server with routing, fan-out and results` with the o
 - Create: `src/usage.ts`, `src/run.ts`, `src/cli.ts`, `src/test/cli.test.ts`
 
 **Interfaces:**
-- Consumes: `Registry` (Task 5); `addAccount` (Task 8); `TokenStore` (Task 6); `fetchProfile` (Task 7); `accountListText` (Task 12); `assertValidName` (Task 4); `dataFolder` (Task 4).
+- Consumes: `Registry` (Task 5); `addAccount` (Task 8, called with `warn` built on `io.stderr`, ruling R25); `TokenStore` (Task 6); `fetchProfile` (Task 7); `accountListText` (Task 12); `assertValidName` (Task 4); `dataFolder` (Task 4).
 - Produces:
   - `type CliIo = { stdout(text: string): void; stderr(text: string): void; stdinIsTerminal: boolean; stdoutIsTerminal: boolean; readSecret(): Promise<string>; registryFile: string; tokens: TokenStore; fetchProfile: (token: string) => Promise<Profile>; addedAt: () => string; serve: () => Promise<void> }`.
   - `runCli(argv: string[], io: CliIo): Promise<number>` in `src/run.ts`. No side effects at import.
@@ -589,7 +589,7 @@ Commands, exact behaviour:
 - `add <name>` without `--pat`: stderr `Adding an account needs --pat. Run in a terminal: multi-account-supabase-mcp add <name> --pat`, exit 2.
 - `list`: stdout is `accountListText`. No token.
 - `default <name>`: `setDefault`, then stdout `Default account: <name>`. An unknown name is an error (exit 1).
-- `remove <name>`: removes the record and the token, then stdout `Removed "<name>".`. An unknown name is an error (exit 1).
+- `remove <name>`: removes the record and the token. A name with no record but a stored token also has its token removed (ruling R24), so the rollback's remediation text works, then stdout `Removed "<name>".`. An unknown name is an error (exit 1).
 - `serve`: calls `io.serve()`, exit 0.
 - `help`, `--help`, `-h`: stdout is the usage text.
 - No command: if `stdinIsTerminal` is true, stdout is the usage text, exit 0. Otherwise `serve`.
