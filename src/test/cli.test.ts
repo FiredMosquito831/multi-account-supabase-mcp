@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -30,8 +31,11 @@ const inTempFolder = async (run: (folder: string) => Promise<void>): Promise<voi
 // An in-memory token store. It implements the interface only, so the test never loads token-store.ts at run time.
 class FakeTokens implements TokenStore {
   private readonly held = new Map<string, string>();
+  // Counts the reads and the deletes, so a test can show that a refused command touched neither.
+  readonly calls = { get: 0, delete: 0 };
 
   async get(account: string): Promise<string | undefined> {
+    this.calls.get += 1;
     return this.held.get(account);
   }
 
@@ -40,6 +44,7 @@ class FakeTokens implements TokenStore {
   }
 
   async delete(account: string): Promise<void> {
+    this.calls.delete += 1;
     this.held.delete(account);
   }
 
@@ -479,8 +484,12 @@ test("remove of a token-shaped name, plain or with a leading space, exits 1 and 
       assert.deepEqual(result.err, [`Error: No account named "${TOKEN_NOTE}".`]);
       assert.deepEqual(result.out, []);
       assert.equal(printed(result).includes(TOKEN_SHAPED), false);
-      assert.equal(await session.tokens.get(TOKEN_SHAPED), TYPED);
     }
+    // The refusals read and delete nothing in the token store, and they write no registry file.
+    assert.equal(session.tokens.calls.get, 0);
+    assert.equal(session.tokens.calls.delete, 0);
+    assert.equal(existsSync(session.file), false);
+    assert.equal(await session.tokens.get(TOKEN_SHAPED), TYPED);
   }));
 
 test("add with three spaces as the typed token prints the no-token error, exits 1, and calls no profile function", () =>
@@ -489,6 +498,35 @@ test("add with three spaces as the typed token prints the no-token error, exits 
     const result = await session.run(["add", "work", "--pat"], { terminal: true, typed: "   " });
     assert.equal(result.code, 1);
     assert.deepEqual(result.err, ["Error: no token was typed."]);
+    assert.deepEqual(result.out, []);
     assert.equal(result.profileCalls, 0);
     assert.equal(session.tokens.size(), 0);
+  }));
+
+test("add of a name that already exists is refused before the token prompt, with no token typed and no identity check", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work"]);
+    const result = await session.run(["add", "work", "--pat"], { terminal: true, typed: TYPED });
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err, ['Error: An account named "work" already exists. Remove it first to replace it.']);
+    assert.deepEqual(result.out, []);
+    assert.equal(result.prompts, 0);
+    assert.equal(result.profileCalls, 0);
+    assert.equal(session.tokens.size(), 0);
+  }));
+
+test("remove of a name with no record, when the token store cannot read it, prints one line with no keyring text, and exits 1", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    session.tokens.get = async () => {
+      throw new Error("keyring-internal-detail");
+    };
+    const result = await session.run(["remove", "ghost"]);
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err, [
+      'Error: The stored token for "ghost" could not be read. Run: multi-account-supabase-mcp remove ghost',
+    ]);
+    assert.deepEqual(result.out, []);
+    assert.equal(printed(result).includes("keyring-internal-detail"), false);
   }));

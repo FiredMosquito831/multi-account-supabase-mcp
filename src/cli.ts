@@ -4,6 +4,7 @@ import path from "node:path";
 import { Registry } from "./accounts/registry.js";
 import { dataFolder } from "./paths.js";
 import { type CliIo, runCli } from "./run.js";
+import { readSecretFrom } from "./secret-input.js";
 import { KeyringTokenStore, type TokenStore } from "./secrets/token-store.js";
 import { type FetchLike, fetchProfile } from "./supabase/api.js";
 
@@ -12,61 +13,10 @@ const IDENTITY_CHECK_TIMEOUT_MS = 30_000;
 const boundedFetch: FetchLike = (url, init) =>
   fetch(url, { ...init, signal: AbortSignal.timeout(IDENTITY_CHECK_TIMEOUT_MS) });
 
-// Reads keys until Enter. Nothing is echoed. Backspace removes one character. Ctrl+C rejects with "Cancelled.",
-// and so does a closed input, so the add never waits forever.
-const readUntilEnter = (stdin: NodeJS.ReadStream): Promise<string> =>
-  new Promise<string>((resolve, reject) => {
-    let typed = "";
-    const stop = (): void => {
-      stdin.removeListener("data", onData);
-      stdin.removeListener("end", onEnd);
-    };
-    const onEnd = (): void => {
-      stop();
-      reject(new Error("Cancelled."));
-    };
-    const onData = (chunk: Buffer | string): void => {
-      const text = String(chunk);
-      // Escape sequences, such as the arrow keys, are ignored, so none of their characters reach the token.
-      if (text.startsWith("\u001b")) {
-        return;
-      }
-      for (const key of text) {
-        if (key === "\r" || key === "\n") {
-          stop();
-          resolve(typed);
-          return;
-        }
-        if (key === "\u0003") {
-          stop();
-          reject(new Error("Cancelled."));
-          return;
-        }
-        if (key === "\u007f" || key === "\b") {
-          typed = [...typed].slice(0, -1).join("");
-        } else if (key >= " ") {
-          typed += key;
-        }
-      }
-    };
-    stdin.on("data", onData);
-    stdin.on("end", onEnd);
-  });
-
-// Reads the token with hidden input. Raw mode is on only while the keys are read, and it is restored in a
-// finally, so a failed read leaves the terminal as it was.
-const readSecret = async (): Promise<string> => {
-  const stdin = process.stdin;
-  const wasRaw = stdin.isRaw;
+// Writes the prompt, then reads the token with hidden input. The reader writes the newline that ends the prompt line.
+const readSecret = (): Promise<string> => {
   process.stderr.write("Token (input is hidden, press Enter when done): ");
-  stdin.setRawMode(true);
-  try {
-    return await readUntilEnter(stdin);
-  } finally {
-    stdin.setRawMode(wasRaw);
-    stdin.pause();
-    process.stderr.write("\n");
-  }
+  return readSecretFrom(process.stdin, process.stderr);
 };
 
 // Loads the registry once, then serves the MCP server over stdio until the client closes stdin. The server module is
@@ -80,27 +30,34 @@ const serveFromRegistryFile = async (registryFile: string, tokens: TokenStore): 
 };
 
 // Builds the real streams and stores, then runs the command. In serve mode stdout carries the protocol, so every log
-// goes to stderr. The exit code is set, not forced, so a running server keeps the process alive.
+// goes to stderr. The exit code is set, not forced, so a running server keeps the process alive. A failure during setup
+// prints its message with the Error prefix and exits with 1, so no stack trace is shown.
 const main = async (): Promise<void> => {
-  const registryFile = path.join(dataFolder(process.env, process.platform, os.homedir()), "accounts.json");
-  const tokens = new KeyringTokenStore();
-  const io: CliIo = {
-    stdout: (text) => {
-      process.stdout.write(`${text}\n`);
-    },
-    stderr: (text) => {
-      process.stderr.write(`${text}\n`);
-    },
-    stdinIsTerminal: process.stdin.isTTY === true,
-    stdoutIsTerminal: process.stdout.isTTY === true,
-    readSecret,
-    registryFile,
-    tokens,
-    fetchProfile: (token) => fetchProfile(token, boundedFetch),
-    addedAt: () => new Date().toISOString(),
-    serve: () => serveFromRegistryFile(registryFile, tokens),
-  };
-  process.exitCode = await runCli(process.argv.slice(2), io);
+  try {
+    const registryFile = path.join(dataFolder(process.env, process.platform, os.homedir()), "accounts.json");
+    const tokens = new KeyringTokenStore();
+    const io: CliIo = {
+      stdout: (text) => {
+        process.stdout.write(`${text}\n`);
+      },
+      stderr: (text) => {
+        process.stderr.write(`${text}\n`);
+      },
+      stdinIsTerminal: process.stdin.isTTY === true,
+      stdoutIsTerminal: process.stdout.isTTY === true,
+      readSecret,
+      registryFile,
+      tokens,
+      fetchProfile: (token) => fetchProfile(token, boundedFetch),
+      addedAt: () => new Date().toISOString(),
+      serve: () => serveFromRegistryFile(registryFile, tokens),
+    };
+    process.exitCode = await runCli(process.argv.slice(2), io);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Error: ${message}\n`);
+    process.exitCode = 1;
+  }
 };
 
 void main();

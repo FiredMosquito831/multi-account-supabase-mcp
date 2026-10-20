@@ -94,6 +94,10 @@ const addCommand = async (args: string[], io: CliIo): Promise<number> => {
   assertValidName(name);
   // The registry is read before the prompt, so a file that cannot be read is reported before a token is typed.
   const registry = await Registry.load(io.registryFile);
+  // A taken name is refused before the prompt, with the same words the account code uses, so no token is typed for it.
+  if (registry.get(name) !== undefined) {
+    throw new Error(`An account named "${name}" already exists. Remove it first to replace it.`);
+  }
   // Spaces around the typed value are not part of a token, so they are removed before any use.
   const token = (await io.readSecret()).trim();
   if (token === "") {
@@ -163,8 +167,21 @@ const removeCommand = async (args: string[], io: CliIo): Promise<number> => {
   const hadRecord = registry.remove(name) !== undefined;
   if (hadRecord) {
     await registry.save();
-  } else if ((await io.tokens.get(name)) === undefined) {
-    throw new Error(`No account named "${shown(name)}".`);
+  } else {
+    // A name with no record is known only by its stored token, so the store is read. A failed read gets one fixed
+    // line, and the keyring's own text is left out.
+    let stored: string | undefined;
+    try {
+      stored = await io.tokens.get(name);
+    } catch {
+      io.stderr(
+        `Error: The stored token for "${shown(name)}" could not be read. Run: multi-account-supabase-mcp remove ${shown(name)}`,
+      );
+      return 1;
+    }
+    if (stored === undefined) {
+      throw new Error(`No account named "${shown(name)}".`);
+    }
   }
   try {
     await io.tokens.delete(name);
