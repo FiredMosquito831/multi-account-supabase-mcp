@@ -4,6 +4,15 @@ import type { CallToolResult } from "@modelcontextprotocol/client";
 import { ChildPool, PLACEHOLDER_TOKEN, TOOL_TIMEOUT_MS, childEnv } from "../mux/children.js";
 import type { ChildClient, ChildSpec, OfficialTool, StartChild } from "../mux/children.js";
 
+// The options of a fake child. Its close can fail (closeError) or never finish (closeHangs).
+type FakeOptions = {
+  tools?: OfficialTool[];
+  reply?: CallToolResult;
+  listError?: Error;
+  closeError?: Error;
+  closeHangs?: boolean;
+};
+
 // A fake child. It records what the pool does to it. Its callTool never answers, unless the test gives it a reply.
 class FakeChild implements ChildClient {
   alive = true;
@@ -11,7 +20,7 @@ class FakeChild implements ChildClient {
   lists = 0;
   timeouts: number[] = [];
 
-  constructor(private readonly options: { tools?: OfficialTool[]; reply?: CallToolResult; listError?: Error } = {}) {}
+  constructor(private readonly options: FakeOptions = {}) {}
 
   isAlive(): boolean {
     return this.alive;
@@ -36,11 +45,17 @@ class FakeChild implements ChildClient {
   async close(): Promise<void> {
     this.closes += 1;
     this.alive = false;
+    if (this.options.closeError !== undefined) {
+      throw this.options.closeError;
+    }
+    if (this.options.closeHangs === true) {
+      return new Promise<void>(() => undefined);
+    }
   }
 }
 
 // A fake StartChild. It records each spec, and returns a new FakeChild for each start. The children are kept in order.
-function fakeStart(options: { tools?: OfficialTool[]; reply?: CallToolResult; listError?: Error } = {}) {
+function fakeStart(options: FakeOptions = {}) {
   const specs: ChildSpec[] = [];
   const children: FakeChild[] = [];
   const start: StartChild = async (spec) => {
@@ -124,6 +139,35 @@ test("the timeout message is fixed, whatever the limit, and a shorter per-call t
   await assert.rejects(child.callTool("execute_sql", {}, 20), {
     message: "Supabase did not answer in time (limit: 15 minutes).",
   });
+});
+
+test("a call that times out closes its child, and the next read starts a new one", async () => {
+  const fake = fakeStart();
+  const pool = new ChildPool(fake.start, { toolTimeoutMs: 20, tokenFor });
+  const first = await pool.read("work");
+  await assert.rejects(first.callTool("execute_sql", {}, TOOL_TIMEOUT_MS), /did not answer in time/);
+  const second = await pool.read("work");
+  assert.equal(fake.specs.length, 2);
+  assert.notStrictEqual(second, first);
+  assert.equal(fake.children[0].closes, 1);
+});
+
+test("a close that fails after a timeout does not replace the timeout error", async () => {
+  const fake = fakeStart({ closeError: new Error("close failed") });
+  const pool = new ChildPool(fake.start, { toolTimeoutMs: 20, tokenFor });
+  const child = await pool.read("work");
+  await assert.rejects(child.callTool("execute_sql", {}, TOOL_TIMEOUT_MS), {
+    message: "Supabase did not answer in time (limit: 15 minutes).",
+  });
+});
+
+test("a close that never finishes does not delay the timeout error", async () => {
+  const fake = fakeStart({ closeHangs: true });
+  const pool = new ChildPool(fake.start, { toolTimeoutMs: 20, tokenFor });
+  const child = await pool.read("work");
+  const began = Date.now();
+  await assert.rejects(child.callTool("execute_sql", {}, TOOL_TIMEOUT_MS), /did not answer in time/);
+  assert.ok(Date.now() - began < 1000, "the rejection must not wait for the close");
 });
 
 test("a call that answers in time returns the child's answer", async () => {

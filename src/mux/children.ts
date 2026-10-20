@@ -66,12 +66,16 @@ export function childEnv(token: string | undefined, parent: NodeJS.ProcessEnv): 
   return env;
 }
 
-// Runs work, and rejects with the fixed message if it has not settled within limitMs. The timer is cleared as soon
-// as work settles, so a call that answers in time leaves no timer behind.
-async function withLimit<T>(work: () => Promise<T>, limitMs: number): Promise<T> {
+// Runs work, and rejects with the fixed message if it has not settled within limitMs. When the time runs out, onExpire
+// runs before the rejection. The timer is cleared as soon as work settles, so a call that answers in time leaves no
+// timer behind.
+async function withLimit<T>(work: () => Promise<T>, limitMs: number, onExpire: () => void): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(NO_ANSWER_MESSAGE)), limitMs);
+    timer = setTimeout(() => {
+      onExpire();
+      reject(new Error(NO_ANSWER_MESSAGE));
+    }, limitMs);
   });
   try {
     return await Promise.race([work(), expired]);
@@ -103,9 +107,7 @@ export class ChildPool {
   }
 
   placeholder(): Promise<ChildClient> {
-    return this.ensure("placeholder", async () =>
-      this.wrap(await this.start({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN })),
-    );
+    return this.ensure("placeholder", () => this.start({ account: null, readOnly: false, token: PLACEHOLDER_TOKEN }));
   }
 
   // Starts a child for the catalog, lists its tools and closes it, also when the listing fails.
@@ -136,7 +138,7 @@ export class ChildPool {
     if (token === PLACEHOLDER_TOKEN) {
       throw new Error(`The stored token for account "${account}" is the placeholder, so no child was started.`);
     }
-    return this.wrap(await this.start({ account, readOnly, token }));
+    return this.start({ account, readOnly, token });
   }
 
   // Returns the child under key while it is alive. Otherwise it starts a new one, and keeps the start under key.
@@ -152,7 +154,10 @@ export class ChildPool {
         return this.ensure(key, open);
       }
     }
-    const opening = open();
+    // The entry is the start itself. A child that times out finds its entry here, and leaves the pool through it.
+    const entry: { start?: Promise<ChildClient> } = {};
+    const opening = open().then((child) => this.wrap(child, () => this.forget(key, entry)));
+    entry.start = opening;
     this.children.set(key, opening);
     try {
       return await opening;
@@ -165,14 +170,27 @@ export class ChildPool {
     }
   }
 
+  // Removes the entry of a child whose call timed out. An entry that was already replaced is left in place.
+  private forget(key: string, entry: { start?: Promise<ChildClient> }): void {
+    if (this.children.get(key) === entry.start) {
+      this.children.delete(key);
+    }
+  }
+
   // The child that callers get. Its callTool is limited by the pool's own timer as well as by the SDK's timeout.
   // The child gets the smaller of the caller's timeout and the pool's limit, so the SDK's timeout never fires first.
-  private wrap(child: ChildClient): ChildClient {
+  // When the pool's timer wins, leave takes the child out of the pool, and the child is closed without waiting for the
+  // close. The caller gets the timeout error at once.
+  private wrap(child: ChildClient, leave: () => void): ChildClient {
     return {
       listTools: () => child.listTools(),
       callTool: (name, args, timeoutMs) => {
         const limit = Math.min(timeoutMs, this.toolTimeoutMs);
-        return withLimit(() => child.callTool(name, args, limit), limit);
+        return withLimit(() => child.callTool(name, args, limit), limit, () => {
+          leave();
+          // A failed close is not reported, because the caller already has the timeout error.
+          child.close().catch(() => undefined);
+        });
       },
       isAlive: () => child.isAlive(),
       close: () => child.close(),
