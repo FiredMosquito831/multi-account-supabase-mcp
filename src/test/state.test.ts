@@ -92,6 +92,21 @@ test("scopeKey is global for the global scope, and a project key holds the absol
   assert.equal(scopeKey("project", "relative-project"), `project:${path.resolve("relative-project")}`);
 });
 
+test("scopeKey for the local scope is local: followed by the absolute folder, and its record is kept apart from the project record", () =>
+  inDataFolder(async (dataDir) => {
+    const folder = path.resolve(os.tmpdir(), "some-project");
+    const localKey = scopeKey("local", folder);
+    assert.equal(localKey, `local:${folder}`);
+    assert.notEqual(localKey, scopeKey("project", folder));
+    const localItem: Item = { kind: "mcp-entry", name: "local-plugin" };
+    await record("claude", scopeKey("project", folder), entry, dataDir);
+    await record("claude", localKey, localItem, dataDir);
+    assert.deepEqual(await recordedItems("claude", localKey, dataDir), [localItem]);
+    await forget("claude", localKey, dataDir);
+    assert.deepEqual(await recordedItems("claude", localKey, dataDir), []);
+    assert.deepEqual(await recordedItems("claude", scopeKey("project", folder), dataDir), [entry]);
+  }));
+
 test("readIfExists gives undefined for a missing file, the text of a file, and a read error for a folder", () =>
   inDataFolder(async (dataDir) => {
     const file = path.join(dataDir, "note.txt");
@@ -215,7 +230,7 @@ test("record refuses an item with a relative path, or a scope key that is not va
       message: "A recorded path must be absolute.",
     });
     await assert.rejects(record("claude", "project:relative", entry, dataDir), {
-      message: 'A scope key must be "global", or "project:" followed by an absolute folder path.',
+      message: 'A scope key must be "global", or "project:" or "local:" followed by an absolute folder path.',
     });
     await assert.rejects(stat(statePath("claude", dataDir)), { code: "ENOENT" });
   }));

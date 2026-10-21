@@ -20,13 +20,22 @@ export type Item =
 const VERSION = 1;
 
 const PROJECT_PREFIX = "project:";
+const LOCAL_PREFIX = "local:";
 
-// The key of a scope in the state file: "global", or "project:" followed by the absolute folder.
-export const scopeKey = (scope: "global" | "project", projectDir: string): string =>
-  scope === "global" ? "global" : `${PROJECT_PREFIX}${path.resolve(projectDir)}`;
+// The key of a scope in the state file: "global", "project:" followed by the absolute folder, or "local:" followed by the
+// absolute folder. A project scope and a local scope in the same folder have different keys.
+export const scopeKey = (scope: "global" | "project" | "local", projectDir: string): string => {
+  if (scope === "global") {
+    return "global";
+  }
+  const prefix = scope === "project" ? PROJECT_PREFIX : LOCAL_PREFIX;
+  return `${prefix}${path.resolve(projectDir)}`;
+};
 
+// A key is "global", or one of the two prefixes followed by an absolute folder.
 const isScopeKey = (key: string): boolean =>
-  key === "global" || (key.startsWith(PROJECT_PREFIX) && path.isAbsolute(key.slice(PROJECT_PREFIX.length)));
+  key === "global" ||
+  [PROJECT_PREFIX, LOCAL_PREFIX].some((prefix) => key.startsWith(prefix) && path.isAbsolute(key.slice(prefix.length)));
 
 // The state file of an agent, in the state folder of the data folder. A folder given by the caller is used instead.
 // An empty folder name counts as not given, as it does for the data folder variable.
@@ -128,7 +137,7 @@ const checkState = (data: unknown): Map<string, Item[]> => {
   const result = new Map<string, Item[]>();
   for (const [key, items] of Object.entries(scopes)) {
     if (!isScopeKey(key)) {
-      throw new Error("A scope key is neither global nor a project folder.");
+      throw new Error("A scope key is neither global nor a project or local folder.");
     }
     if (!Array.isArray(items)) {
       throw new Error("A scope must hold a list of items.");
@@ -197,7 +206,7 @@ const reportLockProblem = (text: string): void => {
 export const record = async (agent: AgentId, key: string, item: Item, dataDir?: string): Promise<void> => {
   const entry = toItem(item);
   if (!isScopeKey(key)) {
-    throw new Error('A scope key must be "global", or "project:" followed by an absolute folder path.');
+    throw new Error('A scope key must be "global", or "project:" or "local:" followed by an absolute folder path.');
   }
   const file = statePath(agent, dataDir);
   await withRegistryLock(

@@ -1,5 +1,5 @@
 import { mkdir, rm, rmdir, writeFile } from "node:fs/promises";
-import { type CommandResult, type Runner, isPresent, runCommand } from "./command.js";
+import { type CommandOptions, type CommandResult, type Runner, isPresent, runCommand } from "./command.js";
 import type { Scope } from "./scopes.js";
 import type { AgentId } from "./state.js";
 
@@ -39,7 +39,9 @@ export interface Context {
   // before a change is made.
   shown: string[];
   present(name: string): boolean;
-  run(command: string, args: readonly string[]): Promise<CommandResult>;
+  // A command runs in the folder of this process, unless the options name another folder. A folder that is named is listed
+  // in shown before the command line, so a dry run shows where each command would run.
+  run(command: string, args: readonly string[], options?: CommandOptions): Promise<CommandResult>;
   writeFile(path: string, text: string): Promise<void>;
   removeFile(path: string): Promise<void>;
   // Creates a folder, and any folder above it that is missing. A folder that exists already is not an error.
@@ -121,12 +123,15 @@ export const makeContext = (options: ContextOptions): Context => {
     dryRun,
     shown,
     present,
-    async run(command, args) {
+    async run(command, args, commandOptions) {
+      if (commandOptions?.cwd !== undefined) {
+        shown.push(`cwd ${commandOptions.cwd}`);
+      }
       shown.push(commandLine(command, args));
       if (dryRun) {
         return { code: 0, stdout: "", stderr: "" };
       }
-      return runner(command, args);
+      return runner(command, args, commandOptions);
     },
     async writeFile(file, text) {
       shown.push(`write ${file}`);
