@@ -14,13 +14,14 @@ export interface Step {
 // The reason an agent gives for lacking a scope. The error and the skipped step use the same words.
 export const unsupportedReason = (agent: AgentId, scope: Scope): string => `${agent} has no ${scope} scope`;
 
-// Raised when an agent that the caller named does not have the scope asked for.
+// Raised when an agent that the caller named does not have the scope asked for. The message is the standard text, unless
+// the caller gives a fuller one.
 export class UnsupportedScope extends Error {
   readonly agent: AgentId;
   readonly scope: Scope;
 
-  constructor(agent: AgentId, scope: Scope) {
-    super(unsupportedReason(agent, scope));
+  constructor(agent: AgentId, scope: Scope, message = unsupportedReason(agent, scope)) {
+    super(message);
     this.name = "UnsupportedScope";
     this.agent = agent;
     this.scope = scope;
