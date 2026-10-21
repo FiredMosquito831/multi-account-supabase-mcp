@@ -108,7 +108,7 @@ const isRefusedRename = (error: unknown): boolean => {
 
 // Renames temp over file. A refused rename waits RENAME_WAIT_MS and is tried again, up to RENAME_TRIES tries in all. Any
 // other error is thrown at once. When every try is refused, the last error is thrown.
-const renameWithRetry = async (temp: string, file: string): Promise<void> => {
+export const renameWithRetry = async (temp: string, file: string): Promise<void> => {
   let tries = 0;
   for (;;) {
     tries += 1;
