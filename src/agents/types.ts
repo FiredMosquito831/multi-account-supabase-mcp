@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, rmdir, writeFile } from "node:fs/promises";
 import { type CommandResult, type Runner, isPresent, runCommand } from "./command.js";
 import type { Scope } from "./scopes.js";
 import type { AgentId } from "./state.js";
@@ -43,6 +43,8 @@ export interface Context {
   removeFile(path: string): Promise<void>;
   // Creates a folder, and any folder above it that is missing. A folder that exists already is not an error.
   ensureDir(path: string): Promise<void>;
+  // Removes a folder only when it is empty. A folder that holds anything, or that is not there, is left as it is.
+  removeDirIfEmpty(path: string): Promise<void>;
 }
 
 // The methods of one agent's adapter. Each one returns the steps it made, so the caller can show them.
@@ -61,6 +63,7 @@ export interface FileOps {
   writeFile(path: string, text: string): Promise<void>;
   removeFile(path: string): Promise<void>;
   ensureDir(path: string): Promise<void>;
+  removeDirIfEmpty(path: string): Promise<void>;
 }
 
 export interface ContextOptions {
@@ -81,6 +84,18 @@ const realFiles: FileOps = {
   // An existing folder is not an error. Folders above a missing one are created as well.
   ensureDir: async (dir) => {
     await mkdir(dir, { recursive: true });
+  },
+  // A folder is removed only when it is empty. rmdir refuses a folder that holds anything, and some systems report that
+  // as EEXIST. A folder that is not there is already gone, so it is not an error. Any other error is reported.
+  removeDirIfEmpty: async (dir) => {
+    try {
+      await rmdir(dir);
+    } catch (error) {
+      const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+      if (code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "ENOENT") {
+        throw error;
+      }
+    }
   },
 };
 
@@ -128,6 +143,12 @@ export const makeContext = (options: ContextOptions): Context => {
       shown.push(`mkdir ${dir}`);
       if (!dryRun) {
         await files.ensureDir(dir);
+      }
+    },
+    async removeDirIfEmpty(dir) {
+      shown.push(`remove empty folder ${dir}`);
+      if (!dryRun) {
+        await files.removeDirIfEmpty(dir);
       }
     },
   };

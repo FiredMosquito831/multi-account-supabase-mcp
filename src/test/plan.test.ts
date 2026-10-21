@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { CommandResult, Runner } from "../agents/command.js";
@@ -44,6 +44,9 @@ const fakeFiles = (effects: string[], contents: Map<string, string>): FileOps =>
   },
   ensureDir: async (dir) => {
     effects.push(`mkdir ${dir}`);
+  },
+  removeDirIfEmpty: async (dir) => {
+    effects.push(`rmdir ${dir}`);
   },
 });
 
@@ -291,4 +294,74 @@ test("a real run creates the folder and any folder above it, in a temporary fold
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("a dry run of removeDirIfEmpty lists the removal, and removes no folder", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "plan-test-"));
+  try {
+    const folder = path.join(root, "empty");
+    await mkdir(folder);
+    const ctx = makeContext({
+      projectDir: PROJECT,
+      cliPath: CLI,
+      packageRoot: PACKAGE,
+      dryRun: true,
+      present: () => true,
+      run: fakeRunner([]),
+    });
+    await ctx.removeDirIfEmpty(folder);
+    assert.deepEqual(ctx.shown, [`remove empty folder ${folder}`]);
+    assert.equal((await stat(folder)).isDirectory(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a real run of removeDirIfEmpty removes an empty folder, keeps a folder that holds a file, and ignores a folder that is not there", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "plan-test-"));
+  try {
+    const empty = path.join(root, "empty");
+    const full = path.join(root, "full");
+    const missing = path.join(root, "missing");
+    await mkdir(empty);
+    await mkdir(full);
+    await writeFile(path.join(full, "note.txt"), "kept");
+    const ctx = makeContext({
+      projectDir: PROJECT,
+      cliPath: CLI,
+      packageRoot: PACKAGE,
+      dryRun: false,
+      present: () => true,
+      run: fakeRunner([]),
+    });
+    await ctx.removeDirIfEmpty(empty);
+    await ctx.removeDirIfEmpty(full);
+    await ctx.removeDirIfEmpty(missing);
+    assert.equal(existsSync(empty), false);
+    assert.equal(await readFile(path.join(full, "note.txt"), "utf8"), "kept");
+    assert.deepEqual(ctx.shown, [
+      `remove empty folder ${empty}`,
+      `remove empty folder ${full}`,
+      `remove empty folder ${missing}`,
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("removeDirIfEmpty throws any other error, and a path with a NUL byte gives one on every system", async () => {
+  const ctx = makeContext({
+    projectDir: PROJECT,
+    cliPath: CLI,
+    packageRoot: PACKAGE,
+    dryRun: false,
+    present: () => true,
+    run: fakeRunner([]),
+  });
+  // Node refuses a path with a NUL byte before it asks the system, with a code that is none of the ignored codes.
+  const unusable = `${PROJECT}${String.fromCharCode(0)}folder`;
+  await assert.rejects(ctx.removeDirIfEmpty(unusable), (error: unknown) => {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "ENOENT";
+  });
 });
