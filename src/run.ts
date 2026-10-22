@@ -108,9 +108,9 @@ const usageError = (io: CliIo): number => {
 
 type Parsed = { positional: string[]; flags: Set<string>; values: Map<string, string> };
 
-// Splits the arguments of a command. A switch stands alone. A valued flag takes the next argument as its value, and the
-// value must not be empty or start with "-". A valued flag may be given once. Any other argument that starts with "-" is an
-// unknown option. Each of these gives undefined, which is a usage error.
+// Splits the arguments of a command. A switch stands alone and may be given once. A valued flag takes the next argument as
+// its value, and the value must not be empty or start with "-". A valued flag may be given once. Any other argument that
+// starts with "-" is an unknown option. Each of these gives undefined, which is a usage error.
 const parseArgs = (args: string[], switches: readonly string[], valued: readonly string[] = []): Parsed | undefined => {
   const positional: string[] = [];
   const flags = new Set<string>();
@@ -120,6 +120,9 @@ const parseArgs = (args: string[], switches: readonly string[], valued: readonly
     if (!arg.startsWith("-")) {
       positional.push(arg);
     } else if (switches.includes(arg)) {
+      if (flags.has(arg)) {
+        return undefined;
+      }
       flags.add(arg);
     } else if (valued.includes(arg)) {
       const value = args[index + 1];
@@ -358,10 +361,7 @@ export const watchInterrupt = (
 // Install, update and uninstall. The named arguments are agent names, and --scope names one scope. The flow checks the names
 // and the scope, and it asks its own questions in a terminal, so this function only reads the command line.
 const changeCommand = async (action: ChangeAction, args: string[], io: CliIo): Promise<number> => {
-  // A switch given twice is refused, as a repeated valued flag is. The check sits here, not in parseArgs, so that add,
-  // default and remove keep their behaviour.
-  const repeated = CHANGE_SWITCHES[action].some((name) => args.filter((arg) => arg === name).length > 1);
-  const parsed = repeated ? undefined : parseArgs(args, CHANGE_SWITCHES[action], ["--scope"]);
+  const parsed = parseArgs(args, CHANGE_SWITCHES[action], ["--scope"]);
   if (parsed === undefined) {
     return usageError(io);
   }

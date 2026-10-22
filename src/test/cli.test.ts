@@ -891,6 +891,31 @@ test("install, update and uninstall with a token-shaped agent name exit 2 with t
     assert.equal(existsSync(target), false);
   }));
 
+test("add, default and remove with a switch given twice exit 2 with the usage error, and write nothing", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const added = await session.run(["add", "play", "--pat", "--pat"], { terminal: true, typed: TYPED });
+    assert.equal(added.code, 2);
+    assert.deepEqual(added.err, ["Usage error.", usageText]);
+    assert.equal(added.prompts, 0);
+    assert.equal(session.tokens.size(), 0);
+    assert.equal(existsSync(session.file), false);
+
+    await seed(session.file, ["work"]);
+    const before = await readFile(session.file, "utf8");
+    for (const argv of [
+      ["default", "work", "--pat", "--pat"],
+      ["remove", "work", "--pat", "--pat"],
+    ]) {
+      const result = await session.run(argv);
+      assert.equal(result.code, 2, argv[0]);
+      assert.deepEqual(result.err, ["Usage error.", usageText], argv[0]);
+      assert.deepEqual(result.out, [], argv[0]);
+    }
+    assert.equal(await readFile(session.file, "utf8"), before);
+    assert.equal(session.tokens.calls.get + session.tokens.calls.delete, 0);
+  }));
+
 test("install --dry-run prints the plan, exits 0, and writes no file", () =>
   inTempFolder(async (folder) => {
     const target = path.join(folder, "would-write.txt");
