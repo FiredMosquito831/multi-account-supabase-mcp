@@ -355,40 +355,20 @@ const BEFORE_INSTALL = [
   "",
 ].join("\n");
 
-test("project install over a table this tool wrote replaces it, keeps the other tables byte for byte, and keeps the old file as a backup", () =>
+test("project install over an edited table this tool wrote is refused: the file keeps its bytes, and no backup or record is made", () =>
   inTemporaryRoot(async (root) => {
     const file = configIn(root);
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, BEFORE_INSTALL);
     await recordTable(root);
     const steps = await codexAdapter.install(contextIn(root), "project");
-    assert.equal(steps[0].status, "ok");
+    assert.equal(steps[0].status, "error");
     assert.equal(steps[0].scope, "project");
-    const expected = [
-      'model = "gpt-5"',
-      "",
-      "[mcp_servers.first]",
-      "command = 'first-command'",
-      "",
-      "[mcp_servers.second]",
-      "command = 'second-command'",
-      "# A comment that belongs to the second table.",
-      "args = ['a']",
-      "",
-      HEADER,
-      `command = '${process.execPath}'`,
-      `args = ['${programIn(root)}', 'serve']`,
-      "",
-    ].join("\n");
-    assert.equal(await readFile(file, "utf8"), expected);
-    assert.equal(await readFile(`${file}.bak`, "utf8"), BEFORE_INSTALL);
+    assert.equal(steps[0].message.includes("was edited"), true);
+    assert.equal(await readFile(file, "utf8"), BEFORE_INSTALL);
+    assert.equal(existsSync(`${file}.bak`), false);
     assert.deepEqual(await recordedItems("codex", scopeKey("project", projectIn(root))), [
       { kind: "toml-table", path: file, table: `mcp_servers.${NAME}` },
-      { kind: "file", path: `${file}.bak`, createdByUs: true },
-      { kind: "directory", path: projectAgentsIn(root) },
-      { kind: "directory", path: projectSkillsDirIn(root) },
-      { kind: "directory", path: projectSkillIn(root) },
-      { kind: "file", path: projectSkillFileIn(root), createdByUs: true },
     ]);
   }));
 
@@ -698,7 +678,7 @@ test("doctor gives no step for a scope with no record, in either scope", () =>
     assert.deepEqual(effects, []);
   }));
 
-test("doctor reports the recorded global entry as ok only when codex mcp list names it as the first word of a line, and skipped otherwise", () =>
+test("doctor reports the recorded global entry as ok when codex mcp list names it as a whole word on any line, and skipped otherwise", () =>
   inTemporaryRoot(async (root) => {
     await recordEntry();
     const effects: string[] = [];
@@ -709,10 +689,12 @@ test("doctor reports the recorded global entry as ok only when codex mcp list na
       globalStep(await codexAdapter.doctor(contextIn(root, { present, run })));
     assert.equal((await check(listing(`Name  Command\n${NAME}  node\n`)))?.status, "ok");
     assert.equal((await check(listing("other-server  node\n")))?.status, "skipped");
-    assert.equal((await check(listing(`other-server  node  ${NAME}\n`)))?.status, "skipped");
+    assert.equal((await check(listing(`other-server  node  ${NAME}\n`)))?.status, "ok");
+    assert.equal((await check(listing(`other-server  node  ${NAME}-old\n`)))?.status, "skipped");
     assert.equal((await check(listing(`${NAME}  node\n`, 1)))?.status, "skipped");
     assert.equal((await check(listing(NAME), false))?.status, "skipped");
     assert.deepEqual(effects, [
+      "run codex mcp list",
       "run codex mcp list",
       "run codex mcp list",
       "run codex mcp list",
@@ -798,8 +780,8 @@ test("an edit that leaves the server defined in a way the header scan cannot rem
     assert.equal((await codexAdapter.install(contextIn(root), "project"))[0].status, "error");
     // The table does not hold the entry this tool writes, so uninstall keeps it and says so.
     const uninstalled = await codexAdapter.uninstall(contextIn(root), "project");
-    assert.equal(uninstalled[0].status, "skipped");
-    assert.equal(uninstalled[0].message.includes("does not hold the server entry this tool writes"), true);
+    assert.equal(uninstalled[0].status, "error");
+    assert.equal(uninstalled[0].message.includes("was edited, so it was left in place"), true);
     assert.equal(await readFile(file, "utf8"), before);
     assert.equal(existsSync(`${file}.bak`), false);
   }));
@@ -812,8 +794,8 @@ test("a recorded table that the owner extended with a sub-table is kept by unins
     await writeFile(file, extended);
     await recordTable(root);
     const steps = await codexAdapter.uninstall(contextIn(root), "project");
-    assert.equal(steps[0].status, "skipped");
-    assert.equal(steps[0].message.includes("does not hold the server entry this tool writes, so it was kept"), true);
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes("was edited, so it was left in place"), true);
     assert.equal(await readFile(file, "utf8"), extended);
   }));
 
@@ -2053,8 +2035,8 @@ test("after a failed write, a table the owner writes under the same key is kept 
     const owner = `[mcp_servers.${NAME}]\ncommand = 'owner-node'\nargs = ['owner-cli']\n`;
     await writeFile(file, owner);
     const steps = await codexAdapter.uninstall(contextIn(root), "project");
-    assert.equal(steps[0].status, "skipped");
-    assert.equal(steps[0].message.includes("does not hold the server entry this tool writes, so it was kept"), true);
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes("was edited, so it was left in place"), true);
     assert.equal(await readFile(file, "utf8"), owner);
     assert.equal(existsSync(`${file}.bak`), false);
   }));
@@ -2072,7 +2054,7 @@ test("a global uninstall whose entry is already gone removes the recorded skill,
 
 // The text of a table kept because it does not hold the entry this tool writes, and the record that keeps it.
 const keptTableText = (root: string): string =>
-  `The table in ${configIn(root)} does not hold the server entry this tool writes, so it was kept.`;
+  `The table [mcp_servers.${NAME}] in ${configIn(root)} was edited, so it was left in place.`;
 
 test("after a Node path change, uninstall keeps the table and its record, and the step says how to remove the table by hand", () =>
   inTemporaryRoot(async (root) => {
@@ -2083,10 +2065,12 @@ test("after a Node path change, uninstall keeps the table and its record, and th
     const changed = current.replace(`command = '${process.execPath}'`, "command = 'C:/old-node/node.exe'");
     await writeFile(file, changed);
     const steps = await codexAdapter.uninstall(contextIn(root), "project");
-    assert.equal(steps[0].status, "skipped");
+    assert.equal(steps[0].status, "error");
     assert.equal(steps[0].message.startsWith(keptTableText(root)), true);
     assert.equal(
-      steps[0].message.includes(`To remove it by hand, delete the table [mcp_servers.${NAME}] and any table under it from ${file}.`),
+      steps[0].message.includes(
+        `To remove it, delete the table [mcp_servers.${NAME}] from the project's .codex/config.toml. Then run this command again. The record stays until then.`,
+      ),
       true,
     );
     assert.equal(steps[0].message.includes("was not written by this tool"), false);
@@ -2099,37 +2083,246 @@ test("after a Node path change, uninstall keeps the table and its record, and th
     );
     // A later uninstall names the kept table again.
     const again = await codexAdapter.uninstall(contextIn(root), "project");
-    assert.equal(again[0].message.includes(`To remove it by hand, delete the table [mcp_servers.${NAME}]`), true);
+    assert.equal(again[0].message.includes(`To remove it, delete the table [mcp_servers.${NAME}] from the project's .codex/config.toml.`), true);
   }));
 
-test("after a Node path change, a later install replaces the kept table after a backup, and a later uninstall removes it", () =>
+test("after a Node path change, install refuses to replace the table, says it was edited, and leaves the table and its backup absent", () =>
   inTemporaryRoot(async (root) => {
     const file = configIn(root);
     assert.equal((await codexAdapter.install(contextIn(root), "project"))[0].status, "ok");
     const current = await readFile(file, "utf8");
     const changed = current.replace(`command = '${process.execPath}'`, "command = 'C:/old-node/node.exe'");
     await writeFile(file, changed);
-    assert.equal((await codexAdapter.uninstall(contextIn(root), "project"))[0].status, "skipped");
+    assert.equal((await codexAdapter.uninstall(contextIn(root), "project"))[0].status, "error");
     const installed = await codexAdapter.install(contextIn(root), "project");
-    assert.equal(installed[0].status, "ok");
-    assert.equal(await readFile(`${file}.bak`, "utf8"), changed);
-    assert.equal((await readFile(file, "utf8")).includes(`command = '${process.execPath}'`), true);
-    const removed = await codexAdapter.uninstall(contextIn(root), "project");
-    assert.equal(removed[0].status, "ok");
-    assert.equal(existsSync(file), false);
+    assert.equal(installed[0].status, "error");
+    assert.equal(installed[0].message.includes("was edited"), true);
+    assert.equal(installed[0].message.includes("Then run this command again."), true);
+    assert.equal(await readFile(file, "utf8"), changed);
+    assert.equal(existsSync(`${file}.bak`), false);
   }));
 
-test("when a table is kept, the status is skipped, even when a skill file was removed in the same step", () =>
+test("install refuses an edited global entry: it runs no codex command, leaves the entry and its record, and says it was edited", () =>
+  inTemporaryRoot(async (root) => {
+    await recordEntry();
+    const file = path.join(globalBaseIn(root), "config.toml");
+    await mkdir(globalBaseIn(root), { recursive: true });
+    const edited = `${HEADER}\ncommand = 'C:/old/node.exe'\nargs = ['${programIn(root)}', 'serve']\n`;
+    await writeFile(file, edited);
+    const effects: string[] = [];
+    const steps = await codexAdapter.install(contextIn(root, { run: fakeRunner(effects) }), "global");
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes("was edited"), true);
+    assert.equal(steps[0].message.includes("Then run this command again."), true);
+    assert.equal(steps[0].message.includes(`codex mcp remove ${NAME}`), true);
+    assert.equal(steps[0].message.includes("The record stays until then."), true);
+    assert.deepEqual(effects, []);
+    assert.equal(existsSync(globalSkillIn(root)), false);
+    assert.deepEqual(await recordedItems("codex", "global"), [{ kind: "mcp-entry", name: NAME }]);
+    assert.equal(await readFile(file, "utf8"), edited);
+  }));
+
+test("install refuses an edited project table: it leaves the table and its record, writes no backup, and says it was edited", () =>
+  inTemporaryRoot(async (root) => {
+    const file = configIn(root);
+    assert.equal((await codexAdapter.install(contextIn(root), "project"))[0].status, "ok");
+    const current = await readFile(file, "utf8");
+    const changed = current.replace(`command = '${process.execPath}'`, "command = 'C:/old-node/node.exe'");
+    await writeFile(file, changed);
+    const steps = await codexAdapter.install(contextIn(root), "project");
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes("was edited"), true);
+    assert.equal(await readFile(file, "utf8"), changed);
+    assert.equal(existsSync(`${file}.bak`), false);
+    assert.equal(
+      (await recordedItems("codex", scopeKey("project", projectIn(root)))).some(
+        (item) => item.kind === "toml-table" && item.path === file,
+      ),
+      true,
+    );
+  }));
+
+test("install still replaces an unedited recorded global entry, and runs remove then add", () =>
+  inTemporaryRoot(async (root) => {
+    await recordEntry();
+    await mkdir(globalBaseIn(root), { recursive: true });
+    await writeFile(path.join(globalBaseIn(root), "config.toml"), serverTable(root));
+    const effects: string[] = [];
+    const steps = await codexAdapter.install(contextIn(root, { run: fakeRunner(effects) }), "global");
+    assert.equal(steps[0].status, "ok");
+    assert.equal(effects[0], `run codex mcp remove ${NAME}`);
+    assert.equal(effects[1].startsWith(`run codex mcp add ${NAME} --`), true);
+  }));
+
+test("install still replaces an unedited recorded project table, with a backup", () =>
+  inTemporaryRoot(async (root) => {
+    const file = configIn(root);
+    assert.equal((await codexAdapter.install(contextIn(root), "project"))[0].status, "ok");
+    const steps = await codexAdapter.install(contextIn(root), "project");
+    assert.equal(steps[0].status, "ok");
+    assert.equal(existsSync(`${file}.bak`), true);
+  }));
+
+test("when a table differs, the step is an error and the skill file stays, since nothing is changed", () =>
   inTemporaryRoot(async (root) => {
     const file = configIn(root);
     assert.equal((await codexAdapter.install(contextIn(root), "project"))[0].status, "ok");
     const current = await readFile(file, "utf8");
     await writeFile(file, current.replace(`command = '${process.execPath}'`, "command = 'C:/old-node/node.exe'"));
     const steps = await codexAdapter.uninstall(contextIn(root), "project");
-    assert.equal(steps[0].status, "skipped");
-    assert.equal(steps[0].message.includes(`Removed the skill file ${projectSkillFileIn(root)}.`), true);
-    assert.equal(existsSync(projectSkillFileIn(root)), false);
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes(`Removed the skill file`), false);
+    assert.equal(existsSync(projectSkillFileIn(root)), true);
     assert.equal(steps[0].message.includes(keptTableText(root)), true);
+  }));
+
+// A folder creation that is logged with the record at that moment. The record is read when the folder is made, so a test can see
+// whether the folder was listed before it existed. A folder named in failing cannot be made.
+type FolderCreation = { dir: string; listed: boolean; existed: boolean };
+const folderCreationLog = (key: string, log: FolderCreation[], failing?: string): FileOps => ({
+  writeFile: async (file, text) => {
+    await writeFile(file, text, "utf8");
+  },
+  removeFile: async (file) => {
+    await rm(file, { force: true });
+  },
+  ensureDir: async (dir) => {
+    const items = await recordedItems("codex", key);
+    log.push({ dir, listed: items.some((item) => item.kind === "directory" && item.path === dir), existed: existsSync(dir) });
+    if (dir === failing) {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    }
+    await mkdir(dir);
+  },
+  removeDirIfEmpty: async (dir) => {
+    try {
+      await rmdir(dir);
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "ENOENT") {
+        throw error;
+      }
+    }
+  },
+});
+
+const contextWithFiles = (root: string, files: FileOps, run: Runner = fakeRunner([])): Context =>
+  makeContext({
+    projectDir: projectIn(root),
+    cliPath: programIn(root),
+    packageRoot: path.join(root, "package"),
+    dryRun: false,
+    present: () => true,
+    run,
+    fs: files,
+  });
+
+test("a folder is recorded before it is made, in the project scope and in the global scope", () =>
+  inTemporaryRoot(async (root) => {
+    const projectLog: FolderCreation[] = [];
+    const project = await codexAdapter.install(
+      contextWithFiles(root, folderCreationLog(scopeKey("project", projectIn(root)), projectLog)),
+      "project",
+    );
+    assert.equal(project[0].status, "ok");
+    assert.equal(projectLog.length > 0, true);
+    for (const creation of projectLog) {
+      assert.equal(creation.listed, true, creation.dir);
+      assert.equal(creation.existed, false, creation.dir);
+    }
+    const globalLog: FolderCreation[] = [];
+    const global = await codexAdapter.install(contextWithFiles(root, folderCreationLog("global", globalLog)), "global");
+    assert.equal(global[0].status, "ok");
+    assert.equal(globalLog.length > 0, true);
+    for (const creation of globalLog) {
+      assert.equal(creation.listed, true, creation.dir);
+      assert.equal(creation.existed, false, creation.dir);
+    }
+  }));
+
+test("a project folder that cannot be made is not listed in the record, and the install is an error", () =>
+  inTemporaryRoot(async (root) => {
+    const key = scopeKey("project", projectIn(root));
+    const configFolder = path.join(projectIn(root), ".codex");
+    const steps = await codexAdapter.install(
+      contextWithFiles(root, folderCreationLog(key, [], configFolder)),
+      "project",
+    );
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes("EACCES"), true);
+    const items = await recordedItems("codex", key);
+    assert.equal(items.some((item) => item.kind === "directory" && item.path === configFolder), false);
+    assert.equal(existsSync(configFolder), false);
+  }));
+
+test("a skill folder that cannot be made leaves no folder in the record, and the global entry stays recorded", () =>
+  inTemporaryRoot(async (root) => {
+    const steps = await codexAdapter.install(
+      contextWithFiles(root, folderCreationLog("global", [], globalSkillIn(root))),
+      "global",
+    );
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes("The server entry was added and recorded"), true);
+    const items = await recordedItems("codex", "global");
+    assert.equal(items.some((item) => item.kind === "mcp-entry"), true);
+    assert.equal(items.some((item) => item.kind === "directory"), false);
+    assert.equal(existsSync(globalSkillIn(root)), false);
+  }));
+
+test("an edited global entry is left in place with its record: uninstall runs no codex command and its step is an error", () =>
+  inTemporaryRoot(async (root) => {
+    await recordEntry();
+    const file = path.join(globalBaseIn(root), "config.toml");
+    await mkdir(globalBaseIn(root), { recursive: true });
+    const edited = `${HEADER}\ncommand = 'C:/old/node.exe'\nargs = ['${programIn(root)}', 'serve']\n`;
+    await writeFile(file, edited);
+    const effects: string[] = [];
+    const steps = await codexAdapter.uninstall(contextIn(root, { run: fakeRunner(effects) }), "global");
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes("was edited, so it was left in place"), true);
+    assert.deepEqual(effects, []);
+    assert.deepEqual(await recordedItems("codex", "global"), [{ kind: "mcp-entry", name: NAME }]);
+    assert.equal(await readFile(file, "utf8"), edited);
+  }));
+
+test("an edited global entry is left in place with its record: update runs no codex command and its step is an error", () =>
+  inTemporaryRoot(async (root) => {
+    await recordEntry();
+    const file = path.join(globalBaseIn(root), "config.toml");
+    await mkdir(globalBaseIn(root), { recursive: true });
+    const edited = `${HEADER}\ncommand = 'C:/old/node.exe'\nargs = ['${programIn(root)}', 'serve']\n`;
+    await writeFile(file, edited);
+    const effects: string[] = [];
+    const steps = await codexAdapter.update(contextIn(root, { run: fakeRunner(effects) }), "global");
+    assert.equal(steps[0].status, "error");
+    assert.deepEqual(effects, []);
+    assert.deepEqual(await recordedItems("codex", "global"), [{ kind: "mcp-entry", name: NAME }]);
+    assert.equal(await readFile(file, "utf8"), edited);
+  }));
+
+test("an unedited global entry is still removed by uninstall, and its step is ok", () =>
+  inTemporaryRoot(async (root) => {
+    await recordEntry();
+    await mkdir(globalBaseIn(root), { recursive: true });
+    await writeFile(path.join(globalBaseIn(root), "config.toml"), serverTable(root));
+    const effects: string[] = [];
+    const steps = await codexAdapter.uninstall(contextIn(root, { run: fakeRunner(effects) }), "global");
+    assert.equal(steps[0].status, "ok");
+    assert.deepEqual(effects, [`run codex mcp remove ${NAME}`]);
+  }));
+
+test("update leaves an edited project table in place, writes no backup, and its step is an error", () =>
+  inTemporaryRoot(async (root) => {
+    const file = configIn(root);
+    assert.equal((await codexAdapter.install(contextIn(root), "project"))[0].status, "ok");
+    const current = await readFile(file, "utf8");
+    const changed = current.replace(`command = '${process.execPath}'`, "command = 'C:/old-node/node.exe'");
+    await writeFile(file, changed);
+    const steps = await codexAdapter.update(contextIn(root), "project");
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.startsWith(keptTableText(root)), true);
+    assert.equal(await readFile(file, "utf8"), changed);
+    assert.equal(existsSync(`${file}.bak`), false);
   }));
 
 test("when the owner's config file is gone, the empty .codex folder that uninstall removes is named in the step", () =>

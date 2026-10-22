@@ -19,22 +19,24 @@ import { type AgentAdapter, type Context, type Step, UnsupportedScope } from "./
 // Each scope also gets the skill: a folder with a SKILL.md file. The global folder is in CODEX_HOME, or in .codex in
 // the home folder. The project folder is .agents/skills in the project. Both places are assumed, not verified yet.
 //
-// This tool writes the skill files itself, rather than through a Codex command, because the Codex command this tool uses
-// is codex mcp, and that does not install skills. ASSUMED: Codex has no command for skills. The help text read for this
-// plan covers codex mcp only.
+// This tool writes the skill files itself, rather than through a Codex command, because the Codex commands it uses are codex mcp
+// commands, and they do not install skills. ASSUMED: Codex has no command for skills. The help text that was checked covers
+// codex mcp only.
 //
 // Only what the record lists is changed. An entry or table that this tool did not write is never taken over: an install
-// refuses when one exists, and an update or an uninstall leaves it alone. Folders are recorded after the call has made
-// them all, and each file is recorded before it is written, so uninstall can remove what this tool made. When a record
-// cannot be written, the folders made by that call are removed again. The project folder is the owner's: an install
-// refuses when it does not exist, so nothing is created above it, and the folder is never recorded and never removed.
-// A backup is recorded before it is written, by install, update and uninstall. Uninstall ends the record of a scope and
+// refuses when one exists, and an update or an uninstall leaves it alone. A folder is recorded before it is made, and a folder
+// that cannot be made is dropped from the record again. Each file is recorded before it is written, so uninstall can remove what
+// this tool made. When a record cannot be written, the folders made by that call are removed again. The project folder is the
+// owner's: an install refuses when it does not exist, so nothing is created above it, and the folder is never recorded and never
+// removed. A backup is recorded before it is written, by install, update and uninstall. Uninstall ends the record of a scope and
 // then records again the backups and the folders that are still on disk, so a later uninstall names the backups and still
 // removes the folders that become empty.
 //
-// The global entry is removed by its key with codex mcp remove, and its content is not read. codex mcp owns that configuration,
-// and this adapter does not read it, so there is no content of its own to check. The project table is text that this adapter
-// writes, so its content is checked before it is removed.
+// An entry or table that differs from the one this tool writes is never removed or replaced, by install, update or uninstall. It is
+// left in place with its record, and the step is an error. An unedited recorded entry or table is replaced by install, and the project
+// file keeps a backup. The project table is text that this adapter writes, so its content is checked against what it writes. The
+// global entry is in the Codex configuration file, so its content is checked there too. ASSUMED: codex mcp add writes the global entry
+// to that file.
 
 const SCOPES = supportedScopes("codex");
 
@@ -319,11 +321,6 @@ const firstLine = (text: string): string | undefined =>
 const failureText = (result: CommandResult): string =>
   firstLine(result.stderr) ?? firstLine(result.stdout) ?? `exit ${result.code}`;
 
-// Whether a listing names the entry: some line starts with the name, as its first word. ASSUMED: the layout of codex mcp list,
-// which is not verified. A name in the middle of a row, such as in another server's arguments, does not count.
-const namesEntry = (listing: string): boolean =>
-  listing.split(/\r?\n/).some((line) => line.split(/[\s|│]+/).find((word) => word !== "") === DIRECT_KEY);
-
 // The characters that end a word in a listing. They are the ones the Antigravity adapter uses, so both read a listing the same way.
 const WORD_BREAK = /[\s|│:,;()[\]"'=]+/;
 
@@ -391,23 +388,71 @@ const keptPreviousText = (dryRun: boolean, backup: string): string =>
 const recordableFolders = (ctx: Context, scope: Scope, made: readonly string[]): string[] =>
   scope === "project" ? made.filter((folder) => path.resolve(folder) !== path.resolve(ctx.projectDir)) : [...made];
 
-// Writes the skill for a site. installSkill calls back once the folders it made exist, and before it writes the file. The folders
-// are recorded first, then the SKILL.md item, so the record never names a folder or a file that a failed folder creation did not
-// leave. In a dry run nothing is recorded.
+// The folders that ensureFolders would make for a target, in order. Nothing is made, and a folder that exists is not listed.
+const missingFolders = async (base: string, target: string): Promise<string[]> => {
+  const missing: string[] = [];
+  for (const folder of await foldersToMake(base, target)) {
+    if (!(await isFolder(folder))) {
+      missing.push(folder);
+    }
+  }
+  return missing;
+};
+
+// Drops from the record the folders of the list that are not on disk, and keeps every other record. A folder that stays on disk
+// keeps its record, because this tool made it. Used when a folder could not be made, so the record does not list a folder that is
+// not there.
+const dropMissingFolders = async (key: string, folders: readonly string[]): Promise<void> => {
+  const absent: string[] = [];
+  for (const folder of folders) {
+    if (!(await isFolder(folder))) {
+      absent.push(folder);
+    }
+  }
+  if (absent.length === 0) {
+    return;
+  }
+  const current = await recordedItems("codex", key);
+  await forget("codex", key);
+  for (const item of current) {
+    if (!(item.kind === "directory" && absent.includes(item.path))) {
+      await record("codex", key, item);
+    }
+  }
+};
+
+// The error for a change that failed after its folders were recorded. The record is set back first. When that fails too, the
+// error says so, so the record is not left without a word.
+const failedWithRecord = async (error: unknown, key: string, folders: readonly string[]): Promise<unknown> => {
+  try {
+    await dropMissingFolders(key, folders);
+    return error;
+  } catch (restoreError) {
+    return new Error(`${checkFailure(error)}. The record could not be set back: ${checkFailure(restoreError)}`, { cause: error });
+  }
+};
+
+// Writes the skill for a site. Each folder the skill needs is recorded before it is made. The SKILL.md item is recorded after the
+// folders exist and before the file is written, so the record never names a file that was not written. When a folder cannot be made,
+// its record is dropped. In a dry run nothing is recorded.
 const writeSkill = async (ctx: Context, scope: "global" | "project", site: SkillSite): Promise<void> => {
   const key = scopeKey(scope, ctx.projectDir);
-  await installSkill(ctx, ctx.packageRoot, site.folder, async (madeFolders) => {
-    if (ctx.dryRun) {
-      return;
+  if (ctx.dryRun) {
+    await installSkill(ctx, ctx.packageRoot, site.folder);
+    return;
+  }
+  let pending: string[] = [];
+  try {
+    pending = recordableFolders(ctx, scope, await missingFolders(site.base, site.folder));
+    for (const toMake of pending) {
+      await record("codex", key, { kind: "directory", path: toMake });
     }
-    const folders = recordableFolders(ctx, scope, madeFolders);
-    await recordThenUndo(ctx, folders, async () => {
-      for (const folder of folders) {
-        await record("codex", key, { kind: "directory", path: folder });
-      }
+    await installSkill(ctx, ctx.packageRoot, site.folder, async () => {
       await record("codex", key, { kind: "file", path: path.join(site.folder, SKILL_FILE), createdByUs: true });
     });
-  });
+  } catch (error) {
+    throw await failedWithRecord(error, key, pending);
+  }
 };
 
 // The checks that follow the record read. Each returns the reason that a change must not be made, or undefined.
@@ -596,9 +641,13 @@ const installGlobal = async (ctx: Context): Promise<Step> => {
   let listingNote = "";
   let removal: CommandResult | undefined;
   if (recorded) {
-    // This tool wrote the entry, so it is replaced: the recorded entry is removed, then added. The result of the removal is read
-    // only when the add fails, so the step can say what codex now lists. The entry may be gone already, so a failed removal is not
-    // an error here.
+    // This tool wrote the entry, so it is replaced: the recorded entry is removed, then added. An entry that was edited is not replaced,
+    // and that check runs before any command. The result of the removal is read only when the add fails, so the step can say what codex
+    // now lists. The entry may be gone already, so a failed removal is not an error here.
+    const edited = await globalEdited(ctx);
+    if (edited !== undefined) {
+      return step("global", "error", edited);
+    }
     removal = await ctx.run("codex", ["mcp", "remove", DIRECT_KEY]);
   } else if (ctx.dryRun) {
     listingNote = "The listing of codex mcp list is not run in a dry run, so an entry this tool did not write is not checked for.";
@@ -646,6 +695,46 @@ const installGlobal = async (ctx: Context): Promise<Step> => {
   return step("global", "ok", sentences(addedText, skillWritten(ctx, site.folder), listingNote));
 };
 
+// The text for an edited global entry, in install, update and uninstall alike. Each of them leaves the entry in place, and the text
+// says how to remove it by hand, because uninstall refuses the same entry. The record stays until the owner removes the entry.
+const editedGlobalText = (): string =>
+  `The entry ${DIRECT_KEY} was edited, so it was left in place. To remove it, delete the entry by hand: the entry named ${DIRECT_KEY} in the Codex configuration, or run codex mcp remove ${DIRECT_KEY}. Then run this command again. The record stays until then.`;
+
+// The text for an edited project table, in install, update and uninstall alike. The table is left in place, and the text says how to
+// remove it by hand, for the same reason as the global entry.
+const editedProjectText = (file: string): string =>
+  `The table [${SERVER_TABLE}] in ${file} was edited, so it was left in place. To remove it, delete the table [${SERVER_TABLE}] from the project's .codex/config.toml. Then run this command again. The record stays until then.`;
+
+// The text that refuses an update, an uninstall or an install of a global entry that differs from the one this tool writes, or
+// undefined when the entry matches or is absent. The entry is in the Codex configuration file in CODEX_HOME, or in .codex in the home
+// folder. ASSUMED: codex mcp add writes the entry to that file, which is not verified. When the file holds no entry under this name, the
+// check passes, and codex mcp decides as before. Nothing is changed by this check.
+const globalEdited = async (ctx: Context): Promise<string | undefined> => {
+  const site = globalSite(ctx.env);
+  if (site === undefined) {
+    return "The home folder is not known from the environment, and CODEX_HOME is not set, so nothing was changed.";
+  }
+  const file = path.join(site.base, "config.toml");
+  const loaded = await loadConfig(file);
+  if (loaded.kind === "invalid") {
+    return notValid(file);
+  }
+  if (loaded.kind === "unreadable") {
+    return unreadableText(file, loaded.reason);
+  }
+  if (loaded.kind !== "ok" || !hasServer(loaded.doc)) {
+    return undefined;
+  }
+  let expected: { command: string; args: string[] };
+  try {
+    expected = directEntry(ctx.cliPath);
+  } catch (error) {
+    return `The entry ${DIRECT_KEY} in ${file} cannot be checked: ${checkFailure(error)}`;
+  }
+  return holdsEntry(loaded.doc, expected.command, expected.args) ? undefined : editedGlobalText();
+};
+
+// An update changes only an entry that this tool wrote and that matches what it writes. An entry that differs is left in place.
 const updateGlobal = async (ctx: Context): Promise<Step> => {
   let items: readonly Item[];
   try {
@@ -653,7 +742,14 @@ const updateGlobal = async (ctx: Context): Promise<Step> => {
   } catch (error) {
     return step("global", "error", stateRefusal(error));
   }
-  return items.some(isEntryRecord) ? installGlobal(ctx) : step("global", "skipped", NOT_INSTALLED);
+  if (!items.some(isEntryRecord)) {
+    return step("global", "skipped", NOT_INSTALLED);
+  }
+  const edited = await globalEdited(ctx);
+  if (edited !== undefined) {
+    return step("global", "error", edited);
+  }
+  return installGlobal(ctx);
 };
 
 const uninstallGlobal = async (ctx: Context): Promise<Step> => {
@@ -671,6 +767,13 @@ const uninstallGlobal = async (ctx: Context): Promise<Step> => {
   if (entryRecorded && !ctx.present("codex")) {
     // Without the program the entry cannot be removed, so the record stays for a later attempt.
     return step("global", "skipped", "codex is not on PATH, so nothing was removed globally.");
+  }
+  if (entryRecorded) {
+    // An entry that differs from the one this tool writes is left in place with its record, and the step is an error.
+    const edited = await globalEdited(ctx);
+    if (edited !== undefined) {
+      return step("global", "error", edited);
+    }
   }
   let removedNow = false;
   if (entryRecorded) {
@@ -716,7 +819,7 @@ const uninstallGlobal = async (ctx: Context): Promise<Step> => {
 };
 
 // The global check. It gives a step only when the record lists the entry. codex mcp list is run only in a real run, because a dry
-// run's result is a fake. ASSUMED: the layout of codex mcp list, as in namesEntry.
+// run's result is a fake. ASSUMED: the layout of codex mcp list, as in listsEntryWord.
 const doctorGlobal = async (ctx: Context): Promise<Step | undefined> => {
   let items: readonly Item[];
   try {
@@ -734,7 +837,7 @@ const doctorGlobal = async (ctx: Context): Promise<Step | undefined> => {
     return step("global", "skipped", "The listing of codex mcp list was not run, because this is a dry run.");
   }
   const listing = await ctx.run("codex", ["mcp", "list"]);
-  if (listing.code === 0 && namesEntry(listing.stdout)) {
+  if (listing.code === 0 && listsEntryWord(listing.stdout)) {
     return step("global", "ok", "The server is in codex mcp list.");
   }
   const exit = listing.code === 0 ? "" : ` (the listing exited with code ${listing.code})`;
@@ -760,6 +863,10 @@ const writeProjectTable = async (ctx: Context, loaded: Extract<Loaded, { kind: "
   }
   if (loaded.kind === "ok" && hasServer(loaded.doc) && !tableRecorded(items, file)) {
     return step("project", "error", `${file} already has the table ${SERVER_TABLE}, which this tool did not write, so nothing was changed.`);
+  }
+  // A recorded table that was edited is not replaced. The text says how to remove it by hand.
+  if (loaded.kind === "ok" && hasServer(loaded.doc) && !holdsEntry(loaded.doc, command, args)) {
+    return step("project", "error", editedProjectText(file));
   }
   const before = loaded.kind === "ok" ? loaded.text : "";
   const beforeDoc: Doc = loaded.kind === "ok" ? loaded.doc : {};
@@ -788,13 +895,22 @@ const writeProjectTable = async (ctx: Context, loaded: Extract<Loaded, { kind: "
       return step("project", "error", `The backup name for ${file} could not be checked (${checkFailure(error)}), so nothing was changed.`);
     }
   }
+  // Each folder is recorded before it is made, so the record never misses a folder that is on disk. When a folder cannot be made,
+  // the record of the folders that are not on disk is dropped.
+  let pending: string[] = [];
+  let made: string[];
   try {
-    const folders = recordableFolders(ctx, "project", await ensureFolders(ctx, ctx.projectDir, folder));
+    pending = ctx.dryRun ? [] : recordableFolders(ctx, "project", await missingFolders(ctx.projectDir, folder));
+    for (const toMake of pending) {
+      await record("codex", key, { kind: "directory", path: toMake });
+    }
+    made = await ensureFolders(ctx, ctx.projectDir, folder);
+  } catch (error) {
+    return step("project", "error", `Nothing was written to ${file}: ${checkFailure(await failedWithRecord(error, key, pending))}`);
+  }
+  try {
     if (!ctx.dryRun) {
-      await recordThenUndo(ctx, folders, async () => {
-        for (const made of folders) {
-          await record("codex", key, { kind: "directory", path: made });
-        }
+      await recordThenUndo(ctx, recordableFolders(ctx, "project", made), async () => {
         if (backup !== undefined) {
           await record("codex", key, { kind: "file", path: backup, createdByUs: true });
         }
@@ -806,7 +922,7 @@ const writeProjectTable = async (ctx: Context, loaded: Extract<Loaded, { kind: "
       });
     }
   } catch (error) {
-    return step("project", "error", `Nothing was written to ${file}: ${checkFailure(error)}`);
+    return step("project", "error", `Nothing was written to ${file}: ${checkFailure(await failedWithRecord(error, key, pending))}`);
   }
   if (backup !== undefined) {
     try {
@@ -912,6 +1028,16 @@ const updateProject = async (ctx: Context): Promise<Step> => {
   if (!tableRecorded(items, file)) {
     return step("project", "skipped", `The table in ${file} was not written by this tool, so nothing was changed.`);
   }
+  let expected: { command: string; args: string[] };
+  try {
+    expected = directEntry(ctx.cliPath);
+  } catch (error) {
+    return step("project", "error", `The table in ${file} cannot be checked: ${checkFailure(error)}`);
+  }
+  // An update does not replace a table that differs from the one this tool writes. The table is left in place with its record.
+  if (!holdsEntry(loaded.doc, expected.command, expected.args)) {
+    return step("project", "error", editedProjectText(file));
+  }
   return writeProjectTable(ctx, loaded);
 };
 
@@ -1015,19 +1141,18 @@ const uninstallProject = async (ctx: Context): Promise<Step> => {
     } catch (error) {
       return step("project", "error", `The table in ${file} cannot be checked: ${checkFailure(error)}`);
     }
-    if (holdsEntry(loaded.doc, expected.command, expected.args)) {
-      const removal = await removeTable(ctx, key, file, loaded, ownFile, ownFolder);
-      if ("error" in removal) {
-        return step("project", "error", removal.error);
-      }
-      removedText = `${verb(ctx, "Removed", "Would remove")} the server table from ${file}.`;
-      madeBackup = removal.backup;
-    } else {
+    if (!holdsEntry(loaded.doc, expected.command, expected.args)) {
       // The record lists a table, but the table in the file is not the one this tool writes, for example after the Node binary
-      // changed. The table is kept, and its record with it, so a later install can replace it after a backup and a later uninstall
-      // names it again. This tool cannot remove it safely, so the step says how to remove it by hand.
-      note = `The table in ${file} does not hold the server entry this tool writes, so it was kept. To remove it by hand, delete the table [${SERVER_TABLE}] and any table under it from ${file}.`;
+      // changed. Nothing is removed and the record stays as it is, so the step is an error. The step says how to remove the table by
+      // hand.
+      return step("project", "error", editedProjectText(file));
     }
+    const removal = await removeTable(ctx, key, file, loaded, ownFile, ownFolder);
+    if ("error" in removal) {
+      return step("project", "error", removal.error);
+    }
+    removedText = `${verb(ctx, "Removed", "Would remove")} the server table from ${file}.`;
+    madeBackup = removal.backup;
   } else if (tableInFile) {
     note = `The table in ${file} was not written by this tool, so it was kept.`;
   } else if (loaded.kind === "missing" && ownFolder) {
