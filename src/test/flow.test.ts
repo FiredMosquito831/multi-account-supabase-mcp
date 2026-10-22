@@ -665,6 +665,97 @@ test("a step line that holds a token shape prints it as [redacted], and a line w
     );
   }));
 
+test("uninstall in a scope with a record gives an unnamed agent that lacks the scope its skipped line", () =>
+  inRoot(async (root) => {
+    const { io, lines } = harness(root, [
+      fakeAgent("claude", ["global", "project", "local"], []),
+      fakeAgent("codex", ["global", "project"], []),
+    ]);
+    await record("claude", scopeKey("local", io.projectDir), { kind: "mcp-entry", name: "recorded" });
+    assert.equal(await uninstall({ agents: ["claude"], scope: "local" }, io), 0);
+    assert.equal(
+      lines.includes("[skipped] codex local: codex has no local scope"),
+      true,
+    );
+  }));
+
+test("a named agent that lacks a scope gets its skipped line when no scope is given", () =>
+  inRoot(async (root) => {
+    const { io, lines } = harness(root, [fakeAgent("codex", ["global", "project"], [])]);
+    assert.equal(await uninstall({ agents: ["codex"] }, io), 0);
+    assert.equal(
+      lines.includes("[skipped] codex local: codex has no local scope"),
+      true,
+    );
+  }));
+
+test("an agent with no record that is not named is not listed, so no-record output stays quiet", () =>
+  inRoot(async (root) => {
+    const { io, lines } = harness(root, [
+      fakeAgent("claude", ["global", "project", "local"], []),
+      fakeAgent("codex", ["global"], []),
+    ]);
+    assert.equal(await uninstall({ agents: ["codex"] }, io), 0);
+    assert.equal(
+      lines.some((line) => line.includes("claude")),
+      false,
+    );
+  }));
+
+test("an interrupt after the first real step stops the change: the next step does not run, the notice is printed, and the exit is 130", () =>
+  inRoot(async (root) => {
+    const calls: string[] = [];
+    const first = fakeAgent("claude", ["global"], calls);
+    const { io, lines } = harness(root, [first, fakeAgent("codex", ["global"], calls)]);
+    let interrupted = false;
+    io.interrupted = () => interrupted;
+    const finishing = first.install;
+    first.install = async (ctx, scope) => {
+      const steps = await finishing(ctx, scope);
+      // Ctrl+C arrives while the first step runs. The step finishes, and the step after it does not start.
+      if (!ctx.dryRun) {
+        interrupted = true;
+      }
+      return steps;
+    };
+    assert.equal(await install({ agents: ["claude", "codex"], yes: true }, io), 130);
+    assert.equal(calls.includes("install claude global real"), true);
+    assert.equal(calls.includes("install codex global real"), false);
+    assert.equal(
+      lines.some((line) => line.startsWith("Stopped by Ctrl+C")),
+      true,
+    );
+    assert.deepEqual(await recordedItems("claude", scopeKey("global", io.projectDir)), [serverOf(io)]);
+  }));
+
+test("an interrupt does not change a dry run: it prints the plan, changes nothing, and exits 0", () =>
+  inRoot(async (root) => {
+    const target = path.join(root, "not-written.txt");
+    const { io, lines } = harness(root, [fakeAgent("claude", ["global"], [], { writes: target })]);
+    io.interrupted = () => true;
+    assert.equal(await install({ agents: ["claude"], dryRun: true }, io), 0);
+    assert.equal(existsSync(target), false);
+    assert.equal(
+      lines.includes("[ok] claude global: Would install claude."),
+      true,
+    );
+    assert.equal(
+      lines.some((line) => line.startsWith("Stopped by Ctrl+C")),
+      false,
+    );
+  }));
+
+test("the install flow writes its records to the data folder in the environment it is given", () =>
+  inRoot(async (root) => {
+    const given = path.join(root, "given-data");
+    const { io } = harness(root, [fakeAgent("claude", ["global"], [])]);
+    io.env = { ...process.env, MULTI_ACCOUNT_SUPABASE_HOME: given };
+    assert.equal(await install({ agents: ["claude"], yes: true }, io), 0);
+    assert.deepEqual(await recordedItems("claude", scopeKey("global", io.projectDir), undefined, io.env), [serverOf(io)]);
+    assert.equal(existsSync(path.join(given, "state", "claude.json")), true);
+    assert.deepEqual(await recordedItems("claude", scopeKey("global", io.projectDir)), []);
+  }));
+
 test("doctor with an adapter that throws still prints the other steps, and exits 1", () =>
   inRoot(async (root) => {
     const { io, lines } = harness(root, [

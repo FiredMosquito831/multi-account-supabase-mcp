@@ -92,10 +92,11 @@ const assertScopeKey = (key: string): void => {
   }
 };
 
-// The state file of an agent, in the state folder of the data folder. A folder given by the caller is used instead.
-// An empty folder name counts as not given, as it does for the data folder variable.
-export const statePath = (agent: AgentId, dataDir?: string): string =>
-  path.join(dataDir || dataFolder(process.env, process.platform, os.homedir()), "state", `${agent}.json`);
+// The state file of an agent, in the state folder of the data folder. A folder given by the caller is used instead. The data folder
+// comes from the environment the caller passes, or from the process environment when none is passed. An empty folder name counts
+// as not given, as it does for the data folder variable.
+export const statePath = (agent: AgentId, dataDir?: string, env: NodeJS.ProcessEnv = process.env): string =>
+  path.join(dataDir || dataFolder(env, process.platform, os.homedir()), "state", `${agent}.json`);
 
 // The one message for a state file that cannot be used. The reason is a fixed phrase or a system error code. The file's text
 // never reaches the message, and no cause is kept, because a parser error can quote the text.
@@ -288,10 +289,16 @@ const reportLockProblem = (text: string): void => {
 // takes. The accounts file has its own lock, and the two share no data. Inside the lock the state is read again, so two calls
 // at the same time both survive. An item that is already listed is not listed again, and then nothing is written. A server
 // item replaces the server item that the scope holds, if there is one, so the scope keeps one path.
-export const record = async (agent: AgentId, key: string, item: Item, dataDir?: string): Promise<void> => {
+export const record = async (
+  agent: AgentId,
+  key: string,
+  item: Item,
+  dataDir?: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<void> => {
   const entry = toItem(item);
   assertScopeKey(key);
-  const file = statePath(agent, dataDir);
+  const file = statePath(agent, dataDir, env);
   await withRegistryLock(
     file,
     async () => {
@@ -311,16 +318,25 @@ export const record = async (agent: AgentId, key: string, item: Item, dataDir?: 
 
 // The items recorded in a scope, in the order they were recorded. A scope with nothing recorded gives an empty list. A
 // read takes no lock: the file is replaced by a rename, so a read sees the old file or the new one.
-export const recordedItems = async (agent: AgentId, key: string, dataDir?: string): Promise<Item[]> => {
+export const recordedItems = async (
+  agent: AgentId,
+  key: string,
+  dataDir?: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<Item[]> => {
   assertScopeKey(key);
-  const scopes = await loadState(statePath(agent, dataDir));
+  const scopes = await loadState(statePath(agent, dataDir, env));
   return [...(scopes?.get(key) ?? [])];
 };
 
 // The keys of the scopes that hold at least one item, in the order the state file lists them. The keys are the ones that
 // scopeKey writes. A read takes no lock, as recordedItems does.
-export const recordedScopeKeys = async (agent: AgentId, dataDir?: string): Promise<string[]> => {
-  const scopes = await loadState(statePath(agent, dataDir));
+export const recordedScopeKeys = async (
+  agent: AgentId,
+  dataDir?: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<string[]> => {
+  const scopes = await loadState(statePath(agent, dataDir, env));
   return [...(scopes ?? new Map<string, Item[]>()).entries()]
     .filter(([, items]) => items.length > 0)
     .map(([key]) => key);
@@ -328,9 +344,14 @@ export const recordedScopeKeys = async (agent: AgentId, dataDir?: string): Promi
 
 // Removes one scope and leaves the other scopes as they are. A scope that is not recorded changes nothing. The state file
 // is removed when this call removes the last scope. The change runs under the same state lock as record.
-export const forget = async (agent: AgentId, key: string, dataDir?: string): Promise<void> => {
+export const forget = async (
+  agent: AgentId,
+  key: string,
+  dataDir?: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<void> => {
   assertScopeKey(key);
-  const file = statePath(agent, dataDir);
+  const file = statePath(agent, dataDir, env);
   // Without a state file there is nothing to forget, so the call returns before the lock. The lock creates the state
   // folder, and forget must not create it.
   if ((await readIfExists(file)) === undefined) {

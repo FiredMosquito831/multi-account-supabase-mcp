@@ -57,11 +57,12 @@ export interface Context {
   cliPath: string;
   packageRoot: string;
   dryRun: boolean;
-  // The environment the agents' folders will be read from. makeContext sets it from the caller's env, or else from
-  // the process environment. No code reads it yet, so the agents and state.ts still read the process environment.
+  // The environment of this context. makeContext sets it from the caller's environment, or else from the process environment.
+  // The codex adapter reads its home and skill folders from it. The state files are read from the environment that the install
+  // flow passes to them. An adapter's own state calls pass no environment, so they read the process environment.
   env: NodeJS.ProcessEnv;
-  // Each command line and file action, in the order it was asked for. When the install flow is built, it runs a dry
-  // pass first and shows this list, so the lines are shown before the real pass makes any change.
+  // Each command line and file action, in the order it was asked for. The install flow runs a dry pass first and shows these
+  // lines before its real pass makes any change.
   shown: string[];
   present(name: string): boolean;
   // A command runs in the folder of this process, unless the options name another folder. A folder that is named is

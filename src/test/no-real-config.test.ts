@@ -12,7 +12,7 @@ import type { Scope } from "../agents/scopes.js";
 import { SKILL_NAME } from "../agents/skill.js";
 import { type AgentId, statePath } from "../agents/state.js";
 import { type Context, makeContext } from "../agents/types.js";
-import { assertIsolated, inTemporaryRoot } from "./isolation.js";
+import { ISOLATED_VARIABLES, assertIsolated, inTemporaryRoot } from "./isolation.js";
 
 const ADAPTERS = [codexAdapter, opencodeAdapter, antigravityAdapter, claudeAdapter];
 const AGENTS: readonly AgentId[] = ["codex", "opencode", "antigravity", "claude"];
@@ -21,9 +21,17 @@ const SCOPES: readonly Scope[] = ["global", "project", "local"];
 // Uninstall and update run first with no record, then install runs, then the same actions run again with a record.
 const ORDER: readonly Action[] = ["uninstall", "update", "install", "doctor", "update", "uninstall", "doctor"];
 
-// The variables that locate the agents' folders. Each one must point inside the temporary root during the run, so an adapter
-// that reads them cannot reach a real folder.
-const LOCATING_VARIABLES = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "CODEX_HOME", "XDG_CONFIG_HOME"] as const;
+// The variables that locate the agents' folders and the data folder. Each one must point inside the temporary root during the run,
+// so an adapter that reads them cannot reach a real folder. All seven isolated names are listed, and each is checked before each plan.
+const LOCATING_VARIABLES = [
+  "HOME",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "CODEX_HOME",
+  "XDG_CONFIG_HOME",
+  "MULTI_ACCOUNT_SUPABASE_HOME",
+] as const;
 
 // The packaged skill text. The skill steps read it from the package folder of the temporary root.
 const SKILL_TEXT = "---\nname: supabase-accounts\ndescription: Fixture for the no-real-config test.\n---\n\nFixture body.\n";
@@ -83,6 +91,10 @@ const assertLocatingInside = (root: string): void => {
     assert.ok(value !== undefined && isInside(root, value), `${name} points inside the temporary root`);
   }
 };
+
+test("the locating names checked before each plan are the seven isolated names, so none can be dropped unnoticed", () => {
+  assert.deepEqual([...LOCATING_VARIABLES].sort(), [...ISOLATED_VARIABLES].sort());
+});
 
 test("no adapter writes outside the temporary folders", async () => {
   await inTemporaryRoot(async (root) => {

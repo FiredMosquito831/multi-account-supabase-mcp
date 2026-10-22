@@ -4,7 +4,7 @@ import { addAccount } from "./accounts/add-account.js";
 import { withRegistryLock } from "./accounts/lock.js";
 import { assertValidName } from "./accounts/names.js";
 import { Registry } from "./accounts/registry.js";
-import type { FlowIo } from "./install/flow.js";
+import { type FlowIo, requestStop } from "./install/flow.js";
 import { accountListText } from "./mux/account-tools.js";
 import type { TokenStore } from "./secrets/token-store.js";
 import type { Profile } from "./supabase/api.js";
@@ -336,6 +336,8 @@ export const INTERRUPT_NOTICE =
   "Stopped by Ctrl+C. If a change had started, it may be partly made. Check the agent's own configuration, and run multi-account-supabase-mcp uninstall --dry-run to see what is recorded.";
 
 // Watches for an interrupt during a change that is not a dry run. Other commands get no handler. Returns a function that removes it.
+// The first Ctrl+C asks the change to stop: the step in progress finishes, the change stops before its next step, and the flow
+// prints its own notice and exits 130. A second Ctrl+C exits at once, with the notice.
 export const watchInterrupt = (
   argv: readonly string[],
   source: EventEmitter,
@@ -345,14 +347,20 @@ export const watchInterrupt = (
   if (!isChangeCommand(argv)) {
     return () => {};
   }
-  // Writes to a pipe or a console can finish after the call returns. An empty write to stdout waits for the lines already
-  // queued there, so the last line is written before the notice and the exit.
+  let asked = false;
   const handler = (): void => {
+    if (!asked) {
+      asked = true;
+      requestStop();
+      return;
+    }
+    // Writes to a pipe or a console can finish after the call returns. An empty write to stdout waits for the lines already
+    // queued there, so the last line is written before the notice and the exit.
     streams.stdout.write("", () => {
       streams.stderr.write(`${INTERRUPT_NOTICE}\n`, () => exit(130));
     });
   };
-  source.once("SIGINT", handler);
+  source.on("SIGINT", handler);
   return () => {
     source.removeListener("SIGINT", handler);
   };

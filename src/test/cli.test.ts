@@ -10,6 +10,7 @@ import type { Scope } from "../agents/scopes.js";
 import type { AgentId } from "../agents/state.js";
 import type { AgentAdapter, Context, Step } from "../agents/types.js";
 import { releaseHooks } from "../accounts/lock.js";
+import { clearStopRequest } from "../install/flow.js";
 import { type AccountRecord, Registry } from "../accounts/registry.js";
 import {
   type CliIo,
@@ -828,6 +829,24 @@ test("a change that is not a dry run gets an interrupt handler, and the handler 
     }
   }));
 
+test("the first Ctrl+C of a change asks it to stop, and does not exit", () =>
+  inTempFolder(async () => {
+    const stream = discard();
+    const source = new EventEmitter();
+    let exits = 0;
+    const stop = watchInterrupt(["install"], source, { stdout: stream, stderr: stream }, () => {
+      exits += 1;
+    });
+    try {
+      source.emit("SIGINT");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(exits, 0);
+    } finally {
+      stop();
+      clearStopRequest();
+    }
+  }));
+
 test("an interrupt of a change writes the notice to stderr after the stdout lines already written, then exits 130", () =>
   inTempFolder(async () => {
     const order: string[] = [];
@@ -853,9 +872,12 @@ test("an interrupt of a change writes the notice to stderr after the stdout line
       watchInterrupt(["install"], source, { stdout, stderr }, resolve);
     });
     stdout.write("the last plan line\n");
+    // The first Ctrl+C asks the change to stop. The second one exits at once.
+    source.emit("SIGINT");
     source.emit("SIGINT");
     assert.equal(await within(exited, 2000), 130);
     assert.deepEqual(order, ["stdout line written", `stderr ${INTERRUPT_NOTICE}`]);
+    clearStopRequest();
   }));
 
 test("install with stdin a pipe and stdout a terminal asks nothing, and refuses without --yes", () =>

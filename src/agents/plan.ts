@@ -94,17 +94,19 @@ export const runPlan = async (options: PlanOptions): Promise<PlanResult> => {
   }
   const planned: Planned[] = [];
   for (const adapter of adapters) {
-    if (agents !== undefined && !agents.includes(adapter.id)) {
-      continue;
-    }
+    const listed = agents === undefined || agents.includes(adapter.id);
     // The doctor action only reads each agent's state, so the scope does not apply to it.
     if (action !== "doctor" && !adapter.scopes.includes(scope)) {
-      if (agents !== undefined) {
+      // A named agent that lacks the scope refuses the whole plan. Any other agent that lacks it gets one skipped line with the reason.
+      if (listed && agents !== undefined) {
         throw new PlanRefused("unsupported-scope", unsupportedReason(adapter.id, scope));
       }
       planned.push({
         known: { agent: adapter.id, scope, status: "skipped", message: unsupportedReason(adapter.id, scope) },
       });
+      continue;
+    }
+    if (!listed) {
       continue;
     }
     planned.push({ adapter, scope });

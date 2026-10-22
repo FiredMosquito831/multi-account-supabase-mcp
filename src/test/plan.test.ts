@@ -172,6 +172,22 @@ test("an agent without the scope is skipped with its reason when no agent was na
   assert.deepEqual(calls, ["claude install project"]);
 });
 
+test("an agent that is not named and lacks the scope gets one skipped line with its reason, and a named agent is still run", async () => {
+  const calls: string[] = [];
+  const result = await runPlan({
+    adapters: [fakeAdapter("claude", ["global", "project", "local"], calls), fakeAdapter("codex", ["global", "project"], calls)],
+    action: "install",
+    agents: ["claude"],
+    scope: "local",
+    ctx: contextFor(true, []),
+  });
+  assert.deepEqual(result.steps, [
+    { agent: "claude", scope: "local", status: "ok", message: "install done" },
+    { agent: "codex", scope: "local", status: "skipped", message: "codex has no local scope" },
+  ]);
+  assert.deepEqual(calls, ["claude install local"]);
+});
+
 test("a dry run changes no file and runs no command, and lists each one in order", async () => {
   const effects: string[] = [];
   const contents = new Map<string, string>();

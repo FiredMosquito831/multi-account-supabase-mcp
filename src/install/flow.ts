@@ -22,9 +22,9 @@ import { dataFolder, isAbsoluteLocation } from "../paths.js";
 import type { TokenStore } from "../secrets/token-store.js";
 
 // The install, update, uninstall and doctor commands, as functions that take parsed options and an io object. Each returns an
-// exit code: 2 for a command line refused before anything runs, 1 when a step or a check failed, and 0 otherwise. A dry run returns
-// 1 when its plan has an error row, so a script sees that the real run would fail. Each step is printed with its status, and the
-// scope or the account that it names.
+// exit code: 2 for a command line refused before anything runs, 1 when a step or a check failed, 130 when a stop was requested
+// during a real change, and 0 otherwise. A dry run returns 1 when its plan has an error row, so a script sees that the real run
+// would fail. Each step is printed with its status, and the scope or the account that it names.
 //
 // An install shows its plan first, from a dry pass. The dry pass lists each command line and file change, and changes nothing.
 // A real pass runs after the owner says yes in a terminal, or at once when --yes is given. With --yes there are no questions.
@@ -45,6 +45,8 @@ const NOTHING_CHANGED = "Nothing was changed.";
 const DRY_RUN_DONE = "Dry run: nothing was changed.";
 const NO_RECORD = "no record in this scope, so nothing was changed.";
 const PLAN_ERROR = "The plan has an error, so nothing was changed. Fix the problem and run the command again.";
+const STOPPED_NOTICE =
+  "Stopped by Ctrl+C. The step that was running finished, and the steps after it did not run. Run multi-account-supabase-mcp uninstall --dry-run to see what is recorded.";
 
 // The inputs of one command. Agents are named by id. Undefined or an empty list means every agent. The scope is as the command
 // line wrote it. Install uses the global scope when none is given. Update and uninstall act in every scope when none is given.
@@ -56,7 +58,8 @@ export interface FlowOptions {
 }
 
 // What the commands read and write. Production builds this from the process. A test passes fakes. The run, present and fs fields
-// are the command runner, the program check and the file functions. When they are left out, the real ones are used.
+// are the command runner, the program check and the file functions. When they are left out, the real ones are used. The
+// interrupted check says whether a stop was requested. When it is left out, the stop requested through requestStop is used.
 export interface FlowIo {
   isTerminal: boolean;
   ask: (question: string) => Promise<string>;
@@ -71,7 +74,22 @@ export interface FlowIo {
   run?: Runner;
   present?: (name: string) => boolean;
   fs?: FileOps;
+  interrupted?: () => boolean;
 }
+
+// The stop request of the command line. The first Ctrl+C sets it, and a real change checks it before each step.
+let stopRequested = false;
+
+export const requestStop = (): void => {
+  stopRequested = true;
+};
+
+// Clears the stop request. The command line never needs this; the tests use it so that one test's request does not reach the next.
+export const clearStopRequest = (): void => {
+  stopRequested = false;
+};
+
+const stopping = (io: FlowIo): boolean => (io.interrupted ?? (() => stopRequested))();
 
 // One line of output: the outcome of a step, or of one doctor check. The label names the agent and the scope, or the account.
 interface Row {
@@ -80,17 +98,21 @@ interface Row {
   message: string;
 }
 
-// The steps of one pass, and the command lines and file changes that the pass listed, in order.
+// The steps of one pass, the command lines and file changes that the pass listed, in order, and whether a stop ended the pass early.
 interface Pass {
   steps: Step[];
   shown: string[];
+  stopped: boolean;
 }
 
-// One scope of an action, with the agents that act in it. The notes say why an agent was left out of the scope.
+// One scope of an action, with the agents that act in it. The notes say why an agent that has no record is listed. The unsupported
+// rows say why an agent lacks the scope. A plan with agents prints those rows itself, so they are printed here only when the scope
+// has no agent to plan.
 interface Target {
   scope: Scope;
   agents: string[];
   notes: Row[];
+  unsupported: Row[];
 }
 
 const adaptersOf = (io: FlowIo): readonly AgentAdapter[] => io.adapters ?? ALL_ADAPTERS;
@@ -172,7 +194,28 @@ const contextFor = (io: FlowIo, dryRun: boolean): Context =>
     fs: io.fs,
   });
 
-// One pass of the planner over one scope. The planner refuses the whole plan before any agent is called, and it throws that.
+// Wraps an adapter's changes so that a change does not start once a stop has been requested. The step in progress is not
+// interrupted, because the wrapper checks only before a step starts.
+const untilStopped = (adapter: AgentAdapter, io: FlowIo, state: { stopped: boolean }): AgentAdapter => {
+  const gate =
+    (change: (ctx: Context, scope: Scope) => Promise<Step[]>) =>
+    async (ctx: Context, scope: Scope): Promise<Step[]> => {
+      if (stopping(io)) {
+        state.stopped = true;
+        return [];
+      }
+      return change(ctx, scope);
+    };
+  return {
+    ...adapter,
+    install: gate(adapter.install),
+    update: gate(adapter.update),
+    uninstall: gate(adapter.uninstall),
+  };
+};
+
+// One pass of the planner over one scope. The planner refuses the whole plan before any agent is called, and it throws that. A
+// dry pass changes nothing, so only a real pass checks for a stop.
 const planPass = async (
   io: FlowIo,
   action: Action,
@@ -180,8 +223,10 @@ const planPass = async (
   agents: readonly string[] | undefined,
   dryRun: boolean,
 ): Promise<Pass> => {
-  const result = await runPlan({ adapters: adaptersOf(io), action, scope, agents, ctx: contextFor(io, dryRun) });
-  return { steps: result.steps, shown: result.shown };
+  const state = { stopped: false };
+  const adapters = dryRun ? adaptersOf(io) : adaptersOf(io).map((adapter) => untilStopped(adapter, io, state));
+  const result = await runPlan({ adapters, action, scope, agents, ctx: contextFor(io, dryRun) });
+  return { steps: result.steps, shown: result.shown, stopped: state.stopped };
 };
 
 // Writes the reason for a refused plan, and returns its exit code. An unknown scope is a wrong command line, so it gives 2.
@@ -234,9 +279,9 @@ const answerFailed = (io: FlowIo): number => {
 
 // Whether an agent holds any record in a scope. A state file that cannot be read counts as a record, so the adapter reads it and
 // reports the failure as its own step.
-const hasRecord = async (agent: AgentId, key: string): Promise<boolean> => {
+const hasRecord = async (agent: AgentId, key: string, env: NodeJS.ProcessEnv): Promise<boolean> => {
   try {
-    return (await recordedItems(agent, key)).length > 0;
+    return (await recordedItems(agent, key, undefined, env)).length > 0;
   } catch {
     return true;
   }
@@ -253,7 +298,13 @@ const recordServers = async (io: FlowIo, steps: readonly Step[]): Promise<Row[]>
       continue;
     }
     try {
-      await record(adapter.id, scopeKey(step.scope, io.projectDir), { kind: "server", cliPath: io.cliPath });
+      await record(
+        adapter.id,
+        scopeKey(step.scope, io.projectDir),
+        { kind: "server", cliPath: io.cliPath },
+        undefined,
+        io.env,
+      );
     } catch (error) {
       rows.push({
         status: "error",
@@ -349,51 +400,56 @@ const installCommand = async (options: FlowOptions, io: FlowIo): Promise<number>
   const rows = [...real.steps.map(rowOf), ...(await recordServers(io, real.steps))];
   io.out("Results:");
   printRows(io, rows);
+  if (real.stopped) {
+    io.out(STOPPED_NOTICE);
+    return 130;
+  }
   return hasError(rows) ? 1 : 0;
 };
 
 export const install = (options: FlowOptions, io: FlowIo): Promise<number> =>
   guarded(io, () => installCommand(options, io));
 
-// The agents that act in one scope. A named agent is always included when the scope is named, so the planner refuses a named
-// agent that lacks the scope. Without a scope named, an agent acts only where it holds a record. An unnamed agent that lacks the
-// scope is left out, and the reason is given when the scope was named.
+// The agents that act in one scope. A named agent that lacks a named scope is passed on, so the planner refuses the whole command. Any
+// other agent that lacks the scope gets one skipped line with the reason, named or not. A named agent that has the scope but no
+// record gets a skipped line too. An agent that is not named and has no record is not listed.
 const targetOf = async (
+  io: FlowIo,
   adapters: readonly AgentAdapter[],
   scope: Scope,
   named: readonly string[] | undefined,
   scopeNamed: boolean,
-  projectDir: string,
 ): Promise<Target> => {
-  const key = scopeKey(scope, projectDir);
+  const key = scopeKey(scope, io.projectDir);
   const agents: string[] = [];
   const notes: Row[] = [];
+  const unsupported: Row[] = [];
   for (const adapter of adapters) {
-    if (named !== undefined && !named.includes(adapter.id)) {
-      continue;
-    }
-    const supported = adapter.scopes.includes(scope);
-    // A named agent that lacks a named scope is passed on, so the planner refuses the whole command.
-    if (!supported && named !== undefined && scopeNamed) {
-      agents.push(adapter.id);
-      continue;
-    }
-    if (!supported) {
-      if (scopeNamed) {
-        notes.push({ status: "skipped", label: `${adapter.id} ${scope}`, message: unsupportedReason(adapter.id, scope) });
+    const listed = named === undefined || named.includes(adapter.id);
+    if (!adapter.scopes.includes(scope)) {
+      if (listed && named !== undefined && scopeNamed) {
+        agents.push(adapter.id);
+        continue;
       }
+      unsupported.push({
+        status: "skipped",
+        label: `${adapter.id} ${scope}`,
+        message: unsupportedReason(adapter.id, scope),
+      });
       continue;
     }
-    if (await hasRecord(adapter.id, key)) {
+    if (!listed) {
+      continue;
+    }
+    if (await hasRecord(adapter.id, key, io.env)) {
       agents.push(adapter.id);
       continue;
     }
-    // A named agent with no record gets a line of its own, so every named agent appears in the output, with or without a scope.
     if (named !== undefined) {
       notes.push({ status: "skipped", label: `${adapter.id} ${scope}`, message: NO_RECORD });
     }
   }
-  return { scope, agents, notes };
+  return { scope, agents, notes, unsupported };
 };
 
 // Update and uninstall share one shape. Each refuses --yes, shows the plan, stops there for a dry run, and otherwise runs. Only
@@ -422,16 +478,14 @@ const runChange = async (action: "update" | "uninstall", options: FlowOptions, i
     return 2;
   }
   const scopes: readonly Scope[] = chosen === undefined ? SCOPES : [chosen];
-  const targets: Target[] = [];
-  const notes: Row[] = [];
+  const all: Target[] = [];
   for (const scope of scopes) {
-    const target = await targetOf(adapters, scope, named, chosen !== undefined, io.projectDir);
-    notes.push(...target.notes);
-    if (target.agents.length > 0) {
-      targets.push(target);
-    }
+    all.push(await targetOf(io, adapters, scope, named, chosen !== undefined));
   }
-  // The reasons for the agents left out are printed in every case, so an empty result still says why.
+  const targets = all.filter((target) => target.agents.length > 0);
+  // A scope with an agent to plan prints its unsupported rows from the plan. A scope without one prints them here, so each
+  // reason is printed once in every case.
+  const notes = all.flatMap((target) => [...target.notes, ...(target.agents.length === 0 ? target.unsupported : [])]);
   printRows(io, notes);
   if (targets.length === 0) {
     const where = chosen === undefined ? "in any scope" : `in the ${chosen} scope`;
@@ -456,12 +510,25 @@ const runChange = async (action: "update" | "uninstall", options: FlowOptions, i
   }
   io.out("Results:");
   const rows: Row[] = [];
+  let stopped = false;
   for (const { target } of plans) {
+    // A stop requested before a scope starts ends the command before that scope's first step.
+    if (stopping(io)) {
+      stopped = true;
+      break;
+    }
     const real = await planPass(io, action, target.scope, target.agents, false);
+    if (real.stopped) {
+      stopped = true;
+    }
     const stepRows = real.steps.map(rowOf);
     const recordRows = action === "update" ? await recordServers(io, real.steps) : [];
     printRows(io, [...stepRows, ...recordRows]);
     rows.push(...stepRows, ...recordRows);
+  }
+  if (stopped) {
+    io.out(STOPPED_NOTICE);
+    return 130;
   }
   return hasError(rows) ? 1 : 0;
 };
@@ -500,7 +567,7 @@ const serverRows = async (io: FlowIo): Promise<Row[]> => {
   for (const adapter of adaptersOf(io)) {
     let keys: string[];
     try {
-      keys = await recordedScopeKeys(adapter.id);
+      keys = await recordedScopeKeys(adapter.id, undefined, io.env);
     } catch (error) {
       rows.push({ status: "error", label: adapter.id, message: reasonOf(error) });
       continue;
@@ -509,7 +576,7 @@ const serverRows = async (io: FlowIo): Promise<Row[]> => {
       const label = `${adapter.id} ${scopeLabel(key)}`;
       let items: Item[];
       try {
-        items = await recordedItems(adapter.id, key);
+        items = await recordedItems(adapter.id, key, undefined, io.env);
       } catch (error) {
         rows.push({ status: "error", label, message: reasonOf(error) });
         continue;

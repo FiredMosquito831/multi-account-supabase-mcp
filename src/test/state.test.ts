@@ -210,6 +210,17 @@ test("a scope holds one server item: recording another replaces it, and recordin
     assert.deepEqual(await recordedItems("claude", "global", dataDir), [entry, second]);
   }));
 
+test("a state write and read with a data folder in the environment given to them land in that folder, not in the process environment's", () =>
+  inDataFolder(async (dataDir) => {
+    const given = path.join(dataDir, "given-by-caller");
+    const env: NodeJS.ProcessEnv = { ...process.env, MULTI_ACCOUNT_SUPABASE_HOME: given };
+    await record("claude", "global", entry, undefined, env);
+    assert.deepEqual(await recordedItems("claude", "global", undefined, env), [entry]);
+    const written = JSON.parse(await readFile(path.join(given, "state", "claude.json"), "utf8")) as { scopes: unknown };
+    assert.deepEqual(written.scopes, { global: [entry] });
+    await assert.rejects(stat(statePath("claude")), { code: "ENOENT" });
+  }));
+
 test("recordedScopeKeys lists the scopes that hold an item, and none before anything is recorded", () =>
   inDataFolder(async (dataDir) => {
     const projectKey = scopeKey("project", path.join(dataDir, "project"));
