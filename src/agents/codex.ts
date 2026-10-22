@@ -324,6 +324,13 @@ const failureText = (result: CommandResult): string =>
 const namesEntry = (listing: string): boolean =>
   listing.split(/\r?\n/).some((line) => line.split(/[\s|│]+/).find((word) => word !== "") === DIRECT_KEY);
 
+// The characters that end a word in a listing. They are the ones the Antigravity adapter uses, so both read a listing the same way.
+const WORD_BREAK = /[\s|│:,;()[\]"'=]+/;
+
+// Whether a listing names the entry as a whole word, on any line and in any position. ASSUMED: the layout of codex mcp list, which
+// is not verified. This is the check before an install, so a listing that shows the name in any position stops the install.
+const listsEntryWord = (listing: string): boolean => listing.split(WORD_BREAK).includes(DIRECT_KEY);
+
 // Whether a failed removal says that the entry is not installed. The line must name the entry and use a phrase that says it is
 // missing. ASSUMED: the wording of codex, which is not verified. A failure without these phrases keeps the record.
 const MISSING_PHRASE = /not found|not installed|does not exist|no such|no mcp server/i;
@@ -587,10 +594,12 @@ const installGlobal = async (ctx: Context): Promise<Step> => {
   const { command, args } = directEntry(ctx.cliPath);
   const recorded = items.some(isEntryRecord);
   let listingNote = "";
+  let removal: CommandResult | undefined;
   if (recorded) {
-    // This tool wrote the entry, so it is replaced: the recorded entry is removed, then added. The result of the removal is not used,
-    // because the entry may be gone already.
-    await ctx.run("codex", ["mcp", "remove", DIRECT_KEY]);
+    // This tool wrote the entry, so it is replaced: the recorded entry is removed, then added. The result of the removal is read
+    // only when the add fails, so the step can say what codex now lists. The entry may be gone already, so a failed removal is not
+    // an error here.
+    removal = await ctx.run("codex", ["mcp", "remove", DIRECT_KEY]);
   } else if (ctx.dryRun) {
     listingNote = "The listing of codex mcp list is not run in a dry run, so an entry this tool did not write is not checked for.";
   } else {
@@ -601,7 +610,7 @@ const installGlobal = async (ctx: Context): Promise<Step> => {
     if (listing.code !== 0) {
       return step("global", "error", `The listing of codex mcp list failed (${failureText(listing)}), so nothing was changed.`);
     }
-    if (namesEntry(listing.stdout)) {
+    if (listsEntryWord(listing.stdout)) {
       return step("global", "error", takenEntryText);
     }
   }
@@ -609,6 +618,15 @@ const installGlobal = async (ctx: Context): Promise<Step> => {
   // A dry run does not read the result of a command, because the result is a fake success. Its step says what would happen.
   if (!ctx.dryRun) {
     if (added.code !== 0) {
+      // When the removal before the add worked, codex no longer lists the entry, and the step says so, in the words the Antigravity
+      // adapter uses. The record still lists the entry, so a later run adds it again.
+      if (removal?.code === 0) {
+        return step(
+          "global",
+          "error",
+          `The server was removed from codex, but adding it again failed, so codex no longer lists it. The record still lists it. ${failureText(added)}`,
+        );
+      }
       return step("global", "error", failureText(added));
     }
     if (!recorded) {
@@ -857,14 +875,30 @@ const installProject = async (ctx: Context): Promise<Step> => {
   return writeProjectTable(ctx, loaded);
 };
 
+// The step for a project config file that cannot be read or parsed, in update and uninstall. With no record in the scope, this tool
+// wrote nothing there, so the step is skipped and no command runs. With a record, the file is refused and nothing is changed.
+const unusableConfig = async (
+  ctx: Context,
+  file: string,
+  loaded: Extract<Loaded, { kind: "invalid" | "unreadable" }>,
+): Promise<Step> => {
+  let items: readonly Item[];
+  try {
+    items = await recordedItems("codex", scopeKey("project", ctx.projectDir));
+  } catch (error) {
+    return step("project", "error", stateRefusal(error));
+  }
+  if (items.length === 0) {
+    return step("project", "skipped", NOT_INSTALLED);
+  }
+  return step("project", "error", loaded.kind === "invalid" ? notValid(file) : unreadableText(file, loaded.reason));
+};
+
 const updateProject = async (ctx: Context): Promise<Step> => {
   const file = configFile(ctx.projectDir);
   const loaded = await loadConfig(file);
-  if (loaded.kind === "invalid") {
-    return step("project", "error", notValid(file));
-  }
-  if (loaded.kind === "unreadable") {
-    return step("project", "error", unreadableText(file, loaded.reason));
+  if (loaded.kind === "invalid" || loaded.kind === "unreadable") {
+    return unusableConfig(ctx, file, loaded);
   }
   if (loaded.kind === "missing" || !hasServer(loaded.doc)) {
     return step("project", "skipped", NOT_INSTALLED);
@@ -957,11 +991,8 @@ const uninstallProject = async (ctx: Context): Promise<Step> => {
   const folder = path.dirname(file);
   const key = scopeKey("project", ctx.projectDir);
   const loaded = await loadConfig(file);
-  if (loaded.kind === "invalid") {
-    return step("project", "error", notValid(file));
-  }
-  if (loaded.kind === "unreadable") {
-    return step("project", "error", unreadableText(file, loaded.reason));
+  if (loaded.kind === "invalid" || loaded.kind === "unreadable") {
+    return unusableConfig(ctx, file, loaded);
   }
   let items: readonly Item[];
   try {

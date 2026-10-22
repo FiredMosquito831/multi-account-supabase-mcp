@@ -216,15 +216,52 @@ test("global install stops when codex mcp list fails, and runs no add", () =>
     assert.deepEqual(effects, ["run codex mcp list"]);
   }));
 
-test("a listing that names the entry only inside another row's arguments does not count, so the add runs", () =>
+test("a listing that names the entry as a later word, not the first, counts as listed, so the install stops and runs no add", () =>
   inTemporaryRoot(async (root) => {
     const effects: string[] = [];
     const listing = fakeRunner(effects, (args) =>
       args[1] === "list" ? { code: 0, stdout: `other-server  node  ${NAME}\n`, stderr: "" } : OK,
     );
     const steps = await codexAdapter.install(contextIn(root, { run: listing }), "global");
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes("Codex already lists a server named"), true);
+    assert.deepEqual(effects, ["run codex mcp list"]);
+  }));
+
+test("a listing that names a longer word that only starts with the entry's name does not count, so the add runs", () =>
+  inTemporaryRoot(async (root) => {
+    const effects: string[] = [];
+    const listing = fakeRunner(effects, (args) =>
+      args[1] === "list" ? { code: 0, stdout: `other-server  node  ${NAME}-old\n`, stderr: "" } : OK,
+    );
+    const steps = await codexAdapter.install(contextIn(root, { run: listing }), "global");
     assert.equal(steps[0].status, "ok");
     assert.equal(effects.length, 2);
+  }));
+
+test("a failed add over a recorded entry says the entry was removed and the record still lists it, and says nothing of a removal that failed", () =>
+  inTemporaryRoot(async (root) => {
+    await recordEntry();
+    const addFails = (removal: CommandResult): Runner =>
+      fakeRunner([], (args) => {
+        if (args[1] === "remove") {
+          return removal;
+        }
+        return args[1] === "add" ? { code: 1, stdout: "", stderr: "add refused\n" } : OK;
+      });
+    const removed = await codexAdapter.install(contextIn(root, { run: addFails(OK) }), "global");
+    assert.equal(removed[0].status, "error");
+    assert.equal(
+      removed[0].message,
+      "The server was removed from codex, but adding it again failed, so codex no longer lists it. The record still lists it. add refused",
+    );
+    assert.deepEqual(await recordedItems("codex", "global"), [{ kind: "mcp-entry", name: NAME }]);
+    const notRemoved = await codexAdapter.install(
+      contextIn(root, { run: addFails({ code: 1, stdout: "", stderr: `No MCP server named ${NAME} is configured.\n` }) }),
+      "global",
+    );
+    assert.equal(notRemoved[0].status, "error");
+    assert.equal(notRemoved[0].message, "add refused");
   }));
 
 test("global install with codex not on PATH stops before any command, in a real run and in a dry run", () =>
@@ -1641,6 +1678,53 @@ test("a config file that cannot be read gives an error step in each project acti
     const doctored = await codexAdapter.doctor(contextIn(root, { present: false }));
     assert.equal(doctored.find((step) => step.scope === "project")?.status, "error");
     assert.deepEqual(await readdir(file), []);
+  }));
+
+test("project update and uninstall with no record and an invalid config file are skipped, run no command, and change no file", () =>
+  inTemporaryRoot(async (root) => {
+    const file = configIn(root);
+    await mkdir(path.dirname(file), { recursive: true });
+    const text = Buffer.from("[mcp_servers.broken\nsecret = 'x' = 1\n");
+    await writeFile(file, text);
+    const effects: string[] = [];
+    const updated = await codexAdapter.update(contextIn(root, { run: fakeRunner(effects) }), "project");
+    const uninstalled = await codexAdapter.uninstall(contextIn(root, { run: fakeRunner(effects) }), "project");
+    for (const steps of [updated, uninstalled]) {
+      assert.equal(steps[0].status, "skipped");
+      assert.equal(steps[0].message.includes("not installed in this scope"), true);
+    }
+    assert.deepEqual(effects, []);
+    assert.deepEqual(await readFile(file), text);
+  }));
+
+test("project update and uninstall with no record and an unreadable config file are skipped, run no command, and change nothing", () =>
+  inTemporaryRoot(async (root) => {
+    const file = configIn(root);
+    await mkdir(file, { recursive: true });
+    const effects: string[] = [];
+    const updated = await codexAdapter.update(contextIn(root, { run: fakeRunner(effects) }), "project");
+    const uninstalled = await codexAdapter.uninstall(contextIn(root, { run: fakeRunner(effects) }), "project");
+    for (const steps of [updated, uninstalled]) {
+      assert.equal(steps[0].status, "skipped");
+    }
+    assert.deepEqual(effects, []);
+    assert.deepEqual(await readdir(file), []);
+  }));
+
+test("project update and uninstall with a record and an invalid config file still give an error, and change nothing", () =>
+  inTemporaryRoot(async (root) => {
+    const file = configIn(root);
+    await recordTable(root);
+    await mkdir(path.dirname(file), { recursive: true });
+    const text = Buffer.from("[mcp_servers.broken\nsecret = 'x' = 1\n");
+    await writeFile(file, text);
+    const updated = await codexAdapter.update(contextIn(root), "project");
+    const uninstalled = await codexAdapter.uninstall(contextIn(root), "project");
+    for (const steps of [updated, uninstalled]) {
+      assert.equal(steps[0].status, "error");
+      assert.equal(steps[0].message.includes("not valid TOML"), true);
+    }
+    assert.deepEqual(await readFile(file), text);
   }));
 
 test("doctor with a relative program path gives an error step for the project scope, and does not throw", () =>
