@@ -6,15 +6,27 @@ import os from "node:os";
 import path from "node:path";
 import { releaseHooks, withRegistryLock } from "../accounts/lock.js";
 
-const BUSY = "Another multi-account-supabase-mcp command is changing the accounts. Try again in a moment.";
+// The busy text for the accounts file, written out. Built from the code instead, a test would pass if the code changed.
+const ACCOUNTS_BUSY = "Another multi-account-supabase-mcp command is changing accounts.json. Try again in a moment.";
 
-// Each test gets its own folder under the system temp folder, and removes it afterwards.
-// No test reads or writes the owner's data folder.
+// Each test gets its own folder under the system temp folder. Every name in FOLDER_NAMES points into it, so no test reads or
+// writes the owner's files. The names are restored, and the folder is removed, afterwards.
 const inTempFolder = async (run: (folder: string) => Promise<void>): Promise<void> => {
   const folder = await mkdtemp(path.join(os.tmpdir(), "lock-test-"));
+  const previous = FOLDER_NAMES.map((name): [string, string | undefined] => [name, process.env[name]]);
+  for (const name of FOLDER_NAMES) {
+    process.env[name] = name === DATA_ENV ? folder : path.join(folder, name.toLowerCase());
+  }
   try {
     await run(folder);
   } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
     await rm(folder, { recursive: true, force: true });
   }
 };
@@ -29,6 +41,17 @@ const gate = (): { wait: Promise<void>; open: () => void } => {
   });
   return { wait, open: () => openGate() };
 };
+
+const DATA_ENV = "MULTI_ACCOUNT_SUPABASE_HOME";
+// Every name that points a test at a home, configuration or data folder. Each test points all of them into its own folder.
+const FOLDER_NAMES = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "CODEX_HOME", "XDG_CONFIG_HOME", DATA_ENV];
+
+test("each test points the home, configuration and data names into its own temporary folder", () =>
+  inTempFolder(async (folder) => {
+    for (const name of FOLDER_NAMES) {
+      assert.equal(path.resolve(process.env[name] ?? "").startsWith(path.resolve(folder)), true, name);
+    }
+  }));
 
 test("(a) the work runs, its value is returned, and the lock file is gone afterwards", () =>
   inTempFolder(async (folder) => {
@@ -107,7 +130,7 @@ test("(c) a second call that waits longer than waitMs rejects with the busy mess
       (error: Error) => error.message,
     );
     firstMayEnd.open();
-    assert.equal(outcome, BUSY);
+    assert.equal(outcome, ACCOUNTS_BUSY);
     assert.equal(secondRan, false);
     assert.equal(await first, "first");
     assert.equal(existsSync(`${file}.lock`), false);
@@ -157,6 +180,30 @@ test("(f) a release that finds another call's id in the lock file leaves that fi
       await writeFile(lock, takenOver);
     });
     assert.equal(await readFile(lock, "utf8"), takenOver);
+  }));
+
+test("a busy lock on a state file reports the state file's name, not the accounts", () =>
+  inTempFolder(async (folder) => {
+    const file = path.join(folder, "claude.json");
+    const firstStarted = gate();
+    const firstMayEnd = gate();
+    const first = withRegistryLock(
+      file,
+      async () => {
+        firstStarted.open();
+        await firstMayEnd.wait;
+        return "first";
+      },
+      { pollMs: 10 },
+    );
+    await firstStarted.wait;
+    const outcome = await withRegistryLock(file, async () => "second", { waitMs: 300, pollMs: 10 }).then(
+      () => "resolved",
+      (error: Error) => error.message,
+    );
+    firstMayEnd.open();
+    assert.equal(outcome, "Another multi-account-supabase-mcp command is changing claude.json. Try again in a moment.");
+    assert.equal(await first, "first");
   }));
 
 // The text that a command prints when the lock file could not be removed. The tests compare the exact words.
@@ -211,7 +258,7 @@ test("a removal that finds the lock file already gone reports nothing, and still
     }
   }));
 
-test("a read of the lock file that fails with EPERM returns the work's result, reports the failure once, and removes nothing", () =>
+test("a read of the lock file that fails with EPERM returns the work's result, reports it once, and removes nothing", () =>
   inTempFolder(async (folder) => {
     const file = path.join(folder, "accounts.json");
     const realRead = releaseHooks.read;

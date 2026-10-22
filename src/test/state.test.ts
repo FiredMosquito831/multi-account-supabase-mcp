@@ -23,6 +23,20 @@ const entry: Item = { kind: "mcp-entry", name: "supabase" };
 // An absolute path, for a valid record that needs a path but never reads the file it names.
 const ABSOLUTE = path.resolve(os.tmpdir(), "state-test-item");
 
+// The message for a scope key that is not the form scopeKey writes for its folder.
+const SCOPE_KEY_MESSAGE =
+  'A scope key must be "global", or "project:" or "local:" followed by a folder in the form scopeKey writes.';
+
+// A folder with its letters as given, and the key that scopeKey writes for it. The expected key is written out for each
+// system, so the tests state the form instead of calling the code under test. On Windows the letters of the key are lower case.
+const SAMPLE_FOLDER = process.platform === "win32" ? "C:\\Some\\Project" : "/some/project";
+const SAMPLE_KEY_FOLDER = process.platform === "win32" ? "c:\\some\\project" : "/some/project";
+
+// A rooted path with no drive depends on the current drive, and only Windows reads a path that way. On other systems the
+// same path is not absolute anyway, so a test of that rule means nothing there. Those tests run on Windows only.
+const WINDOWS_ONLY: string | false =
+  process.platform === "win32" ? false : "a rooted path with no drive is refused only on Windows";
+
 // Each test gets its own data folder under the system temp folder. Every name in FOLDER_NAMES points into it, so a call that
 // leaves out the folder still cannot reach the owner's real files. The data folder variable is the folder itself, which the
 // tests that leave out the folder rely on. The names are restored, and the folder is removed, afterwards.
@@ -84,6 +98,22 @@ const withSaveHooks = async (fakes: Partial<typeof saveHooks>, run: () => Promis
   }
 };
 
+// Keys that are not the form scopeKey writes for their folder: a trailing separator, a dot-dot segment, and a folder that is
+// not absolute. Each form is tried with each scope prefix, so the local scope is held to the same rule as the project scope.
+const badKeys = (): [string, string][] => {
+  const folder = SAMPLE_KEY_FOLDER;
+  const parent = path.dirname(folder);
+  const name = path.basename(folder);
+  const forms: [string, string][] = [
+    ["a trailing separator", `${folder}${path.sep}`],
+    ["a dot-dot segment", `${parent}${path.sep}${name}${path.sep}..${path.sep}${name}`],
+    ["a folder that is not absolute", "state-test-key"],
+  ];
+  return ["project:", "local:"].flatMap((prefix) =>
+    forms.map(([label, folderPart]): [string, string] => [`${label} after ${prefix}`, `${prefix}${folderPart}`]),
+  );
+};
+
 test("each test points the home, configuration and data names into its own temporary folder", () =>
   inDataFolder(async (dataDir) => {
     for (const name of FOLDER_NAMES) {
@@ -98,32 +128,37 @@ test("statePath is the state folder of the data folder, named after the agent, w
     assert.equal(statePath("codex"), path.join(dataDir, "state", "codex.json"));
   }));
 
-test("scopeKey is global for the global scope, and a project key holds the absolute folder", () =>
+test("statePath uses the folder it is given, even when the data folder variable names another one", () =>
+  inDataFolder(async (dataDir) => {
+    const other = path.join(dataDir, "elsewhere");
+    assert.equal(statePath("codex", other), path.join(other, "state", "codex.json"));
+    assert.equal(statePath("codex"), path.join(dataDir, "state", "codex.json"));
+  }));
+
+test("scopeKey is global for the global scope, and a project key holds the folder in the form scopeKey writes", () =>
   inDataFolder(async () => {
     // Every name must point into a temporary folder, so this test is isolated like the others.
     for (const name of FOLDER_NAMES) {
       assert.equal(path.resolve(process.env[name] ?? "").startsWith(path.resolve(os.tmpdir())), true, name);
     }
-    const folder = path.resolve(os.tmpdir(), "some-project");
-    assert.equal(scopeKey("global", folder), "global");
-    assert.equal(scopeKey("project", folder), `project:${folder}`);
-    // A relative folder is made absolute first, as path.resolve does.
-    assert.equal(scopeKey("project", "relative-project"), `project:${path.resolve("relative-project")}`);
+    assert.equal(scopeKey("global", SAMPLE_FOLDER), "global");
+    assert.equal(scopeKey("project", SAMPLE_FOLDER), `project:${SAMPLE_KEY_FOLDER}`);
+    // A relative folder gives the key of the folder it names, resolved against the working folder.
+    assert.equal(scopeKey("project", "relative-project"), scopeKey("project", path.resolve("relative-project")));
   }));
 
-test("scopeKey for the local scope is local: followed by the absolute folder, and its record is kept apart from the project record", () =>
+test("scopeKey for the local scope is local: and the folder, and its record is kept apart from the project record", () =>
   inDataFolder(async (dataDir) => {
-    const folder = path.resolve(os.tmpdir(), "some-project");
-    const localKey = scopeKey("local", folder);
-    assert.equal(localKey, `local:${folder}`);
-    assert.notEqual(localKey, scopeKey("project", folder));
+    const localKey = scopeKey("local", SAMPLE_FOLDER);
+    assert.equal(localKey, `local:${SAMPLE_KEY_FOLDER}`);
+    assert.notEqual(localKey, scopeKey("project", SAMPLE_FOLDER));
     const localItem: Item = { kind: "mcp-entry", name: "local-plugin" };
-    await record("claude", scopeKey("project", folder), entry, dataDir);
+    await record("claude", scopeKey("project", SAMPLE_FOLDER), entry, dataDir);
     await record("claude", localKey, localItem, dataDir);
     assert.deepEqual(await recordedItems("claude", localKey, dataDir), [localItem]);
     await forget("claude", localKey, dataDir);
     assert.deepEqual(await recordedItems("claude", localKey, dataDir), []);
-    assert.deepEqual(await recordedItems("claude", scopeKey("project", folder), dataDir), [entry]);
+    assert.deepEqual(await recordedItems("claude", scopeKey("project", SAMPLE_FOLDER), dataDir), [entry]);
   }));
 
 test("a marketplace item is recorded and read back under its scope, and a marketplace item with an empty name is refused", () =>
@@ -136,14 +171,58 @@ test("a marketplace item is recorded and read back under its scope, and a market
     });
   }));
 
-test("readIfExists gives undefined for a missing file, the text of a file, and a read error for a folder", () =>
+test("one folder has one key: on Windows another letter case of the folder is refused, and elsewhere it is another folder", () =>
+  inDataFolder(async (dataDir) => {
+    const folder = path.join(dataDir, "Project");
+    const otherCase = `project:${folder.toUpperCase()}`;
+    if (process.platform === "win32") {
+      assert.equal(scopeKey("project", folder.toUpperCase()), scopeKey("project", folder));
+      await assert.rejects(record("claude", otherCase, entry, dataDir), { message: SCOPE_KEY_MESSAGE });
+    } else {
+      // Letter case is part of a name on these systems, so the other case is another folder with its own key.
+      await record("claude", otherCase, entry, dataDir);
+      assert.deepEqual(await recordedItems("claude", otherCase, dataDir), [entry]);
+      assert.deepEqual(await recordedItems("claude", scopeKey("project", folder), dataDir), []);
+    }
+  }));
+
+for (const [label, key] of badKeys()) {
+  test(`a scope key with ${label} is refused by record, recordedItems and forget, and by a state file that holds it`, () =>
+    inDataFolder(async (dataDir) => {
+      await assert.rejects(record("claude", key, entry, dataDir), { message: SCOPE_KEY_MESSAGE });
+      await assert.rejects(recordedItems("claude", key, dataDir), { message: SCOPE_KEY_MESSAGE });
+      await assert.rejects(forget("claude", key, dataDir), { message: SCOPE_KEY_MESSAGE });
+      await assert.rejects(stat(statePath("claude", dataDir)), { code: "ENOENT" });
+      const file = await writeRawState(dataDir, JSON.stringify({ version: 1, scopes: { [key]: [entry] } }));
+      await assert.rejects(recordedItems("claude", "global", dataDir), {
+        message: refusedMessage(file, "unexpected contents"),
+      });
+    }));
+}
+
+test("readIfExists gives undefined for a missing file, the text of a file, and a refusal with the error code for a folder", () =>
   inDataFolder(async (dataDir) => {
     const file = path.join(dataDir, "note.txt");
     assert.equal(await readIfExists(file), undefined);
     await writeFile(file, "hello");
     assert.equal(await readIfExists(file), "hello");
-    // A folder is not a missing file, so its read error is thrown and is not taken for "no file".
-    assert.notEqual((await errorOf(readIfExists(dataDir))).code, "ENOENT");
+    // The refusal names the file and the error code. The system's own message is not passed on.
+    const raw = await errorOf(readFile(dataDir, "utf8"));
+    const error = await errorOf(readIfExists(dataDir));
+    assert.equal(error.message, refusedMessage(dataDir, raw.code ?? "read failed"));
+    assert.equal(error.message.includes(raw.message), false);
+  }));
+
+test("a state path that is a folder is refused by name and error code, and the folder is left as it is", () =>
+  inDataFolder(async (dataDir) => {
+    const file = statePath("claude", dataDir);
+    await mkdir(file, { recursive: true });
+    const raw = await errorOf(readFile(file, "utf8"));
+    const message = refusedMessage(file, raw.code ?? "read failed");
+    await assert.rejects(recordedItems("claude", "global", dataDir), { message });
+    await assert.rejects(record("claude", "global", entry, dataDir), { message });
+    assert.equal((await stat(file)).isDirectory(), true);
+    assert.equal(message.includes(raw.message), false);
   }));
 
 test("record, then recordedItems, returns the item", () =>
@@ -176,7 +255,30 @@ test("forget removes only its scope, and another scope of the same agent stays e
     });
   }));
 
-test('a state file that holds "sbp_TESTVALUE" and is not JSON is refused, names the file and the reason, and is not changed', () =>
+test("forget with no state file leaves no state folder behind", () =>
+  inDataFolder(async (dataDir) => {
+    await forget("claude", "global", dataDir);
+    await assert.rejects(stat(path.join(dataDir, "state")), { code: "ENOENT" });
+  }));
+
+test("forget of a key that is not recorded does not rewrite the state file", () =>
+  inDataFolder(async (dataDir) => {
+    // The file is written by hand in a form the code would not write, so a rewrite would change its bytes.
+    const text = JSON.stringify({ version: 1, scopes: { global: [entry] } });
+    const file = await writeRawState(dataDir, text);
+    await forget("claude", scopeKey("project", path.join(dataDir, "project")), dataDir);
+    assert.equal(await readFile(file, "utf8"), text);
+  }));
+
+test("forget leaves a state file that holds no scope alone, because it removes no scope", () =>
+  inDataFolder(async (dataDir) => {
+    const text = '{"version":1,"scopes":{}}';
+    const file = await writeRawState(dataDir, text);
+    await forget("claude", "global", dataDir);
+    assert.equal(await readFile(file, "utf8"), text);
+  }));
+
+test('a state file that holds "sbp_TESTVALUE" and is not JSON is refused by name and reason, and is not changed', () =>
   inDataFolder(async (dataDir) => {
     const file = await writeRawState(dataDir, "sbp_TESTVALUE");
     const before = await readFile(file);
@@ -205,6 +307,8 @@ test('a state file that holds "sbp_TESTVALUE" and is not JSON is refused, names 
 const wrongShapes: [string, unknown][] = [
   ["a version other than 1", { version: 2, scopes: {} }],
   ["no scopes", { version: 1 }],
+  ["scopes that is null", { version: 1, scopes: null }],
+  ["an extra key at the top level", { version: 1, scopes: {}, extra: 1 }],
   ["scopes that is an array", { version: 1, scopes: [] }],
   ["an item of an unknown kind", { version: 1, scopes: { global: [{ kind: "registry", name: "supabase" }] } }],
   [
@@ -222,6 +326,14 @@ const wrongShapes: [string, unknown][] = [
   [
     "a JSON pointer without a leading slash",
     { version: 1, scopes: { global: [{ kind: "json-entry", path: ABSOLUTE, pointer: "mcpServers/supabase" }] } },
+  ],
+  [
+    "a json-entry item with an empty pointer",
+    { version: 1, scopes: { global: [{ kind: "json-entry", path: ABSOLUTE, pointer: "" }] } },
+  ],
+  [
+    "a toml-table item with an empty table name",
+    { version: 1, scopes: { global: [{ kind: "toml-table", path: ABSOLUTE, table: "" }] } },
   ],
   [
     "a marketplace item with a field besides its name",
@@ -263,13 +375,81 @@ test("record refuses an item with a relative path, or a scope key that is not va
     await assert.rejects(record("claude", "global", { kind: "directory", path: "relative/dir" }, dataDir), {
       message: "A recorded path must be absolute.",
     });
-    await assert.rejects(record("claude", "project:relative", entry, dataDir), {
-      message: 'A scope key must be "global", or "project:" or "local:" followed by an absolute folder path.',
+    await assert.rejects(record("claude", "project:relative", entry, dataDir), { message: SCOPE_KEY_MESSAGE });
+    await assert.rejects(stat(statePath("claude", dataDir)), { code: "ENOENT" });
+  }));
+
+test(
+  "a rooted path with no drive, such as \\foo\\bar, is refused as a recorded path and writes nothing",
+  { skip: WINDOWS_ONLY },
+  () =>
+    inDataFolder(async (dataDir) => {
+      await assert.rejects(record("claude", "global", { kind: "directory", path: "\\foo\\bar" }, dataDir), {
+        message: "A recorded path must be absolute.",
+      });
+      await assert.rejects(stat(statePath("claude", dataDir)), { code: "ENOENT" });
+    }),
+);
+
+test("a recorded path is written as path.resolve writes it: a dot segment or a trailing separator is refused", () =>
+  inDataFolder(async (dataDir) => {
+    const message =
+      "A recorded path must be written as path.resolve writes it: no dot segments, no trailing separator.";
+    const withDotDot = `${dataDir}${path.sep}a${path.sep}..${path.sep}b`;
+    await assert.rejects(record("claude", "global", { kind: "directory", path: withDotDot }, dataDir), { message });
+    await assert.rejects(record("claude", "global", { kind: "directory", path: `${dataDir}${path.sep}` }, dataDir), {
+      message,
     });
     await assert.rejects(stat(statePath("claude", dataDir)), { code: "ENOENT" });
   }));
 
-test("a write whose rename fails removes its temporary file, and the state file keeps its earlier bytes", () =>
+test("a scope that lists the same item twice reads as one item", () =>
+  inDataFolder(async (dataDir) => {
+    await writeRawState(dataDir, JSON.stringify({ version: 1, scopes: { global: [entry, entry] } }));
+    assert.deepEqual(await recordedItems("claude", "global", dataDir), [entry]);
+  }));
+
+// A key written by an earlier version of this code kept the letters of its folder as given. On Windows it names the same
+// folder as the key scopeKey writes now, so it is read as that key. Each scope prefix is tested in the same way.
+for (const scope of ["project", "local"] as const) {
+  test(
+    `on Windows, a ${scope} key written with the folder's letters as given is read as the key scopeKey writes now`,
+    { skip: WINDOWS_ONLY },
+    () =>
+      inDataFolder(async (dataDir) => {
+        const earlier = `${scope}:${SAMPLE_FOLDER}`;
+        const current = scopeKey(scope, SAMPLE_FOLDER);
+        const other: Item = { kind: "directory", path: path.join(SAMPLE_FOLDER, ".codex") };
+        const later: Item = { kind: "mcp-entry", name: "later" };
+        // Both keys name one folder, so their items are read together, and the next write keeps them under the current key.
+        await writeRawState(dataDir, JSON.stringify({ version: 1, scopes: { [earlier]: [entry], [current]: [other] } }));
+        assert.deepEqual(await recordedItems("claude", current, dataDir), [entry, other]);
+        await record("claude", current, later, dataDir);
+        assert.deepEqual(JSON.parse(await readFile(statePath("claude", dataDir), "utf8")), {
+          version: 1,
+          scopes: { [current]: [entry, other, later] },
+        });
+      }),
+  );
+
+  test(
+    `on Windows, an item listed under both the earlier ${scope} key and the current key is read once`,
+    { skip: WINDOWS_ONLY },
+    () =>
+      inDataFolder(async (dataDir) => {
+        const earlier = `${scope}:${SAMPLE_FOLDER}`;
+        const current = scopeKey(scope, SAMPLE_FOLDER);
+        const other: Item = { kind: "directory", path: path.join(SAMPLE_FOLDER, ".codex") };
+        await writeRawState(
+          dataDir,
+          JSON.stringify({ version: 1, scopes: { [earlier]: [entry, other], [current]: [other] } }),
+        );
+        assert.deepEqual(await recordedItems("claude", current, dataDir), [entry, other]);
+      }),
+  );
+}
+
+test("a rename that fails with EIO removes its temporary file, and the state file keeps its earlier bytes", () =>
   inDataFolder(async (dataDir) => {
     await record("claude", "global", entry, dataDir);
     const file = statePath("claude", dataDir);
@@ -329,7 +509,7 @@ test("a rename refused twice with EPERM and then accepted saves the state and le
     assert.deepEqual(await readdir(path.dirname(file)), ["claude.json"]);
   }));
 
-test("a rename refused every time is tried ten times, then the write raises that error, keeps the old bytes, and leaves no temporary file", () =>
+test("a rename refused every time is tried ten times, then the write fails with that error and keeps the old bytes", () =>
   inDataFolder(async (dataDir) => {
     await record("claude", "global", entry, dataDir);
     const file = statePath("claude", dataDir);

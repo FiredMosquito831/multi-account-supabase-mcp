@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { withRegistryLock } from "../accounts/lock.js";
 import { renameWithRetry } from "../accounts/registry.js";
-import { dataFolder } from "../paths.js";
+import { dataFolder, isAbsoluteLocation } from "../paths.js";
 
 export type AgentId = "claude" | "codex" | "opencode" | "antigravity";
 
@@ -26,28 +26,81 @@ const VERSION = 1;
 const PROJECT_PREFIX = "project:";
 const LOCAL_PREFIX = "local:";
 
-// The key of a scope in the state file: "global", "project:" followed by the absolute folder, or "local:" followed by the
-// absolute folder. A project scope and a local scope in the same folder have different keys.
+// The folder part of a scope key. The path is resolved, so a trailing separator, a dot-dot segment or a relative path gives
+// the key of the folder it names. On Windows the letters are lower case, because a Windows folder name is not case-sensitive
+// by default, so one folder has one key.
+const keyFolder = (folder: string): string => {
+  const resolved = path.resolve(folder);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+};
+
+// The key of a scope in the state file: "global", "project:" followed by the folder, or "local:" followed by the folder.
+// A project scope and a local scope in the same folder have different keys.
 export const scopeKey = (scope: "global" | "project" | "local", projectDir: string): string => {
   if (scope === "global") {
     return "global";
   }
   const prefix = scope === "project" ? PROJECT_PREFIX : LOCAL_PREFIX;
-  return `${prefix}${path.resolve(projectDir)}`;
+  return `${prefix}${keyFolder(projectDir)}`;
 };
 
-// A key is "global", or one of the two prefixes followed by an absolute folder.
-const isScopeKey = (key: string): boolean =>
-  key === "global" ||
-  [PROJECT_PREFIX, LOCAL_PREFIX].some((prefix) => key.startsWith(prefix) && path.isAbsolute(key.slice(prefix.length)));
+// A key is "global", or the key that scopeKey writes for the folder after its prefix. Any other form, such as a trailing
+// separator, a dot-dot segment, or on Windows another letter case, is a second key for one folder, which uninstall would
+// not find.
+const isScopeKey = (key: string): boolean => {
+  if (key === "global") {
+    return true;
+  }
+  if (key.startsWith(PROJECT_PREFIX)) {
+    return scopeKey("project", key.slice(PROJECT_PREFIX.length)) === key;
+  }
+  if (key.startsWith(LOCAL_PREFIX)) {
+    return scopeKey("local", key.slice(LOCAL_PREFIX.length)) === key;
+  }
+  return false;
+};
+
+// The key that a key in a state file stands for, or undefined when the key is not one of ours. An earlier version of this code
+// kept the letters of the folder as given. On Windows such a key names the same folder as the key scopeKey writes now, so it
+// is read as that key, and the next write stores the items under the current key. Any other form is refused.
+const storedKeyMeaning = (key: string): string | undefined => {
+  if (isScopeKey(key)) {
+    return key;
+  }
+  for (const [prefix, scope] of [
+    [PROJECT_PREFIX, "project"],
+    [LOCAL_PREFIX, "local"],
+  ] as const) {
+    if (key.startsWith(prefix)) {
+      const folder = key.slice(prefix.length);
+      return prefix + path.resolve(folder) === key ? scopeKey(scope, folder) : undefined;
+    }
+  }
+  return undefined;
+};
+
+const SCOPE_KEY_MESSAGE =
+  'A scope key must be "global", or "project:" or "local:" followed by a folder in the form scopeKey writes.';
+
+// Every call that takes a key checks it first, so a key in another form is an error, not a silent empty result.
+const assertScopeKey = (key: string): void => {
+  if (!isScopeKey(key)) {
+    throw new Error(SCOPE_KEY_MESSAGE);
+  }
+};
 
 // The state file of an agent, in the state folder of the data folder. A folder given by the caller is used instead.
 // An empty folder name counts as not given, as it does for the data folder variable.
 export const statePath = (agent: AgentId, dataDir?: string): string =>
   path.join(dataDir || dataFolder(process.env, process.platform, os.homedir()), "state", `${agent}.json`);
 
-// The text of a file, or undefined when there is no such file. Any other read error is thrown as it is. Its message
-// holds the file's path and a system code, never the text.
+// The one message for a state file that cannot be used. The reason is a fixed phrase or a system error code. The file's text
+// never reaches the message, and no cause is kept, because a parser error can quote the text.
+const refused = (file: string, reason: string): Error =>
+  new Error(`The agent state file cannot be read, so nothing was changed: ${file} (${reason})`);
+
+// The text of a file, or undefined when there is no such file. Any other read error is refused with the file's name and the
+// error code, as the accounts file refuses its own. The system's message is not passed on.
 export const readIfExists = async (file: string): Promise<string | undefined> => {
   try {
     return await readFile(file, "utf8");
@@ -56,7 +109,7 @@ export const readIfExists = async (file: string): Promise<string | undefined> =>
     if (code === "ENOENT") {
       return undefined;
     }
-    throw error;
+    throw refused(file, typeof code === "string" ? code : "read failed");
   }
 };
 
@@ -67,11 +120,16 @@ const nonEmptyText = (value: unknown): string => {
   return value;
 };
 
-// A path is kept only as an absolute path, so uninstall cannot act on a file that depends on the working folder.
+// A path is kept only when it names a place without depending on the working folder. On Windows a rooted path with no drive
+// depends on the current drive, so it is refused. One place has one spelling, so a path is kept only in the form path.resolve
+// writes it.
 const absolutePath = (value: unknown): string => {
   const file = nonEmptyText(value);
-  if (!path.isAbsolute(file)) {
+  if (!isAbsoluteLocation(file)) {
     throw new Error("A recorded path must be absolute.");
+  }
+  if (path.resolve(file) !== file) {
+    throw new Error("A recorded path must be written as path.resolve writes it: no dot segments, no trailing separator.");
   }
   return file;
 };
@@ -127,7 +185,11 @@ const toItem = (value: unknown): Item => {
   }
 };
 
-// Checks the whole parsed file. Each key must be a valid scope key, and each scope must hold a list of valid items.
+// Two items are the same when their fields are the same. Items keep one fixed field order, so their JSON compares them.
+const sameItem = (a: Item, b: Item): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+// Checks the whole parsed file. The top level holds exactly the version and the scopes. Each key must be a key that scopeKey
+// writes, or one that an earlier version wrote, and each scope must hold a list of valid items.
 const checkState = (data: unknown): Map<string, Item[]> => {
   if (typeof data !== "object" || data === null || Array.isArray(data)) {
     throw new Error("The file does not hold a JSON object.");
@@ -142,22 +204,25 @@ const checkState = (data: unknown): Map<string, Item[]> => {
     throw new Error('The "scopes" value must be an object.');
   }
   const result = new Map<string, Item[]>();
-  for (const [key, items] of Object.entries(scopes)) {
-    if (!isScopeKey(key)) {
-      throw new Error("A scope key is neither global nor a project or local folder.");
+  for (const [stored, items] of Object.entries(scopes)) {
+    const key = storedKeyMeaning(stored);
+    if (key === undefined) {
+      throw new Error("A scope key is not one that scopeKey writes.");
     }
     if (!Array.isArray(items)) {
       throw new Error("A scope must hold a list of items.");
     }
-    result.set(key, items.map((item) => toItem(item)));
+    // Two stored keys can name one scope, and the items of both are read together. An item that is listed twice is kept once.
+    const listed = result.get(key) ?? [];
+    for (const item of items.map((value) => toItem(value))) {
+      if (!listed.some((existing) => sameItem(existing, item))) {
+        listed.push(item);
+      }
+    }
+    result.set(key, listed);
   }
   return result;
 };
-
-// The one message for a state file that cannot be used. The reason is a fixed phrase. The file's text never reaches the
-// message, and no cause is kept, because a parser error can quote the text.
-const refused = (file: string, reason: string): Error =>
-  new Error(`The agent state file cannot be read, so nothing was changed: ${file} (${reason})`);
 
 // The scopes of an agent, or undefined when there is no state file. A file that is not JSON, or has the wrong shape, is
 // refused. The refusal comes before any write, so a refused file is never changed.
@@ -179,9 +244,9 @@ const loadState = async (file: string): Promise<Map<string, Item[]> | undefined>
   }
 };
 
-// Writes every scope to a temporary file with a unique name in the same folder, syncs it, then renames it over the
-// state file. A rename that is refused for a moment is tried again by the helper that the accounts file uses. A failed
-// write removes its temporary file, and the state file keeps its earlier bytes.
+// Writes every scope to a temporary file with a unique name in the same folder, syncs it, then renames it over the state
+// file. A rename that is refused for a moment is tried again by the helper that the accounts file uses. A failed write
+// removes its temporary file, and the state file keeps its earlier bytes.
 const writeState = async (file: string, scopes: Map<string, Item[]>): Promise<void> => {
   const text = `${JSON.stringify({ version: VERSION, scopes: Object.fromEntries(scopes) }, null, 2)}\n`;
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
@@ -207,22 +272,19 @@ const reportLockProblem = (text: string): void => {
   process.stderr.write(`${text}\n`);
 };
 
-// Keeps an item in a scope. The change runs under the lock that the accounts file uses, and the state is read again
-// inside it, so two calls at the same time both survive. An item that is already listed is not listed again, and then
-// nothing is written.
+// Keeps an item in a scope. The change runs under the state file's own lock, `<state file>.lock`, which withRegistryLock
+// takes. The accounts file has its own lock, and the two share no data. Inside the lock the state is read again, so two calls
+// at the same time both survive. An item that is already listed is not listed again, and then nothing is written.
 export const record = async (agent: AgentId, key: string, item: Item, dataDir?: string): Promise<void> => {
   const entry = toItem(item);
-  if (!isScopeKey(key)) {
-    throw new Error('A scope key must be "global", or "project:" or "local:" followed by an absolute folder path.');
-  }
+  assertScopeKey(key);
   const file = statePath(agent, dataDir);
   await withRegistryLock(
     file,
     async () => {
       const scopes = (await loadState(file)) ?? new Map<string, Item[]>();
       const items = scopes.get(key) ?? [];
-      const wanted = JSON.stringify(entry);
-      if (items.some((existing) => JSON.stringify(existing) === wanted)) {
+      if (items.some((existing) => sameItem(existing, entry))) {
         return;
       }
       items.push(entry);
@@ -236,13 +298,15 @@ export const record = async (agent: AgentId, key: string, item: Item, dataDir?: 
 // The items recorded in a scope, in the order they were recorded. A scope with nothing recorded gives an empty list. A
 // read takes no lock: the file is replaced by a rename, so a read sees the old file or the new one.
 export const recordedItems = async (agent: AgentId, key: string, dataDir?: string): Promise<Item[]> => {
+  assertScopeKey(key);
   const scopes = await loadState(statePath(agent, dataDir));
   return [...(scopes?.get(key) ?? [])];
 };
 
-// Removes one scope and leaves the other scopes as they are. A scope that is not recorded changes nothing. When no
-// scope is left, the state file is removed. The change runs under the same lock as record.
+// Removes one scope and leaves the other scopes as they are. A scope that is not recorded changes nothing. The state file
+// is removed when this call removes the last scope. The change runs under the same state lock as record.
 export const forget = async (agent: AgentId, key: string, dataDir?: string): Promise<void> => {
+  assertScopeKey(key);
   const file = statePath(agent, dataDir);
   // Without a state file there is nothing to forget, so the call returns before the lock. The lock creates the state
   // folder, and forget must not create it.
@@ -253,9 +317,12 @@ export const forget = async (agent: AgentId, key: string, dataDir?: string): Pro
     file,
     async () => {
       const scopes = await loadState(file);
+      // A scope that is not recorded is not removed, so the file is not rewritten. A file that holds no scope at all falls
+      // under this rule too.
       if (scopes === undefined || !scopes.delete(key)) {
         return;
       }
+      // The scope removed was the last one, so the state file goes.
       if (scopes.size === 0) {
         await rm(file, { force: true });
         return;

@@ -226,7 +226,7 @@ The file holds, for each account, the name, the Supabase email, the Supabase use
 
 Changes are made under a lock:
 
-- While a change is made, a lock file, `accounts.json.lock`, sits next to the accounts file. A lock file older than two minutes is taken over, because it was left by a command that stopped. A command that finds the lock held waits up to 60 seconds. If the lock is still held after that, the command stops with `Error: Another multi-account-supabase-mcp command is changing the accounts. Try again in a moment.`
+- While a change is made, a lock file, `accounts.json.lock`, sits next to the accounts file. A lock file older than two minutes is taken over, because it was left by a command that stopped. A command that finds the lock held waits up to 60 seconds. If the lock is still held after that, the command stops with `Error: Another multi-account-supabase-mcp command is changing accounts.json. Try again in a moment.`
 - If the lock file cannot be read or removed after a change, the command prints `The lock file could not be removed. It expires two minutes after it was written, and a change waits for it until then.` The result of the change is still returned.
 - A save writes a temporary file next to the accounts file, and then renames it over the file. A rename that is refused with `EPERM`, `EBUSY` or `EACCES` is tried again, up to 10 tries in all, 100 ms apart. Other errors are not retried.
 

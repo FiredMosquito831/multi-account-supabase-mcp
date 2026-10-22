@@ -28,7 +28,10 @@ const DEFAULT_WAIT_MS = 60_000;
 const DEFAULT_STALE_MS = 120_000;
 const DEFAULT_POLL_MS = 100;
 
-const BUSY_MESSAGE = "Another multi-account-supabase-mcp command is changing the accounts. Try again in a moment.";
+// The busy message names the file that is being changed, by its file name, so a state file's lock is not reported as a change
+// to the accounts.
+const busyMessage = (lockedFile: string): string =>
+  `Another multi-account-supabase-mcp command is changing ${path.basename(lockedFile)}. Try again in a moment.`;
 
 const errorCode = (error: unknown): unknown =>
   typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
@@ -114,7 +117,7 @@ const tryOnce = async (lockPath: string, id: string, settings: Settings): Promis
 
 // Takes the lock for this call's id. A held or busy lock is waited for. Once the wait reaches waitMs, the call throws the
 // busy message, or the error that kept the lock busy, so a real permission problem is reported as itself.
-const acquire = async (lockPath: string, id: string, settings: Settings): Promise<void> => {
+const acquire = async (lockPath: string, id: string, settings: Settings, busy: string): Promise<void> => {
   const started = settings.now();
   for (;;) {
     const attempt = await tryOnce(lockPath, id, settings);
@@ -125,7 +128,7 @@ const acquire = async (lockPath: string, id: string, settings: Settings): Promis
       continue;
     }
     if (settings.now() - started >= settings.waitMs) {
-      throw attempt.outcome === "busy" ? attempt.error : new Error(BUSY_MESSAGE);
+      throw attempt.outcome === "busy" ? attempt.error : new Error(busy);
     }
     await settings.sleep(settings.pollMs);
   }
@@ -204,9 +207,9 @@ const releaseLock = async (
   }
 };
 
-// Runs work while this call holds the lock for the registry file. The lock file is the registry file's path with ".lock"
-// added. The lock is released when the work returns and when it throws. A release that fails is reported through
-// onReleaseFailure, and the call still returns the work's result or error.
+// Runs work while this call holds the lock for a file that is being changed: the accounts file, or an agent's state file.
+// The lock file is that file's path with ".lock" added. The lock is released when the work returns and when it throws. A
+// release that fails is reported through onReleaseFailure, and the call still returns the work's result or error.
 export const withRegistryLock = async <T>(
   registryFile: string,
   work: () => Promise<T>,
@@ -223,7 +226,7 @@ export const withRegistryLock = async <T>(
   await mkdir(path.dirname(registryFile), { recursive: true });
   const lockPath = `${registryFile}.lock`;
   const id = randomUUID();
-  await acquire(lockPath, id, settings);
+  await acquire(lockPath, id, settings, busyMessage(registryFile));
   try {
     return await work();
   } finally {
