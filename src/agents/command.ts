@@ -53,9 +53,16 @@ const isAbsoluteEntry = (dir: string): boolean => {
   return path.posix.isAbsolute(dir);
 };
 
-// The PATH entries that name a whole folder, in order. A relative entry would be read from whichever folder the
-// caller is in, so it is skipped. An empty entry is skipped too, because it would name the current folder.
-const absoluteEntries = (): string[] => (process.env.PATH ?? "").split(path.delimiter).filter(isAbsoluteEntry);
+// One pair of double quotes around an entry is removed. Windows writes an entry that has a space in quotes, such as
+// "C:\Program Files\nodejs", and the quotes are not part of the folder name. Only one pair is removed.
+const unquoted = (entry: string): string =>
+  entry.length >= 2 && entry.startsWith('"') && entry.endsWith('"') ? entry.slice(1, -1) : entry;
+
+// The PATH entries that name a whole folder, in order. Each entry loses one pair of surrounding quotes first. A relative
+// entry would be read from whichever folder the caller is in, so it is skipped. An empty entry is skipped too, because it
+// would name the current folder.
+const absoluteEntries = (): string[] =>
+  (process.env.PATH ?? "").split(path.delimiter).map(unquoted).filter(isAbsoluteEntry);
 
 // A regular file, following a symbolic link. A folder with the same name is not a program.
 const isFile = (file: string): boolean => {

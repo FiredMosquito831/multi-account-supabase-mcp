@@ -28,7 +28,7 @@ export type CallDeps = {
   catalog: () => Promise<OfficialTool[]>;
 };
 
-// The read-only query tool. It is listed only when READONLY_QUERY_EXPOSED is true, which this plan does not set. Its
+// The read-only query tool. It is listed only when READONLY_QUERY_EXPOSED is true, and that constant is false here. Its
 // official name is execute_sql, and its mode is locate.
 const READONLY_QUERY_DEFINITION: OfficialTool = {
   name: READONLY_QUERY_TOOL,

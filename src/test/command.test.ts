@@ -184,6 +184,56 @@ test(
   },
 );
 
+test("a PATH entry wrapped in double quotes is searched, so a program in that folder is found, even when the folder name has a space", async () => {
+  const dir = path.join(makeFolder(), "Program Files");
+  mkdirSync(dir);
+  const file = path.join(dir, isWindows ? "tool.exe" : "tool");
+  writeFileSync(file, isWindows ? "placeholder\r\n" : "#!/bin/sh\nexit 0\n");
+  // The mode given to writeFileSync is reduced by the umask, so the execute bits are set again here.
+  chmodSync(file, 0o755);
+  // Windows writes an entry that has a space in double quotes, such as "C:\Program Files\nodejs".
+  await withPath(`"${dir}"`, () => {
+    assert.deepEqual(resolveCommand("tool"), { file, viaCmd: false });
+  });
+});
+
+test("an unquoted PATH entry is searched, as before, with or without a space in its name", async () => {
+  const dir = path.join(makeFolder(), "Program Files");
+  mkdirSync(dir);
+  const file = path.join(dir, isWindows ? "tool.exe" : "tool");
+  writeFileSync(file, isWindows ? "placeholder\r\n" : "#!/bin/sh\nexit 0\n");
+  chmodSync(file, 0o755);
+  await withPath(dir, () => {
+    assert.deepEqual(resolveCommand("tool"), { file, viaCmd: false });
+  });
+});
+
+test("an empty PATH entry, or an empty pair of quotes, names no folder, and the folders around it are still searched", async () => {
+  const folder = makeFolder();
+  const dir = path.join(folder, "bin");
+  mkdirSync(dir);
+  const program = isWindows ? "tool.exe" : "tool";
+  const file = path.join(dir, program);
+  writeFileSync(file, isWindows ? "placeholder\r\n" : "#!/bin/sh\nexit 0\n");
+  chmodSync(file, 0o755);
+  // A copy of the program sits in the working folder, which an empty entry would name, so it must not be found.
+  const inWorkingFolder = path.join(folder, program);
+  writeFileSync(inWorkingFolder, isWindows ? "placeholder\r\n" : "#!/bin/sh\nexit 0\n");
+  chmodSync(inWorkingFolder, 0o755);
+  const saved = process.cwd();
+  process.chdir(folder);
+  try {
+    await withPath('""', () => {
+      assert.equal(resolveCommand("tool"), undefined);
+    });
+    await withPath(`${path.delimiter}""${path.delimiter}${dir}`, () => {
+      assert.deepEqual(resolveCommand("tool"), { file, viaCmd: false });
+    });
+  } finally {
+    process.chdir(saved);
+  }
+});
+
 test("a relative PATH entry is not used", async () => {
   const project = makeFolder();
   const bin = path.join(project, "bin");

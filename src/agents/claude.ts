@@ -11,7 +11,7 @@ import { type AgentAdapter, type Context, type Step } from "./types.js";
 // - install: -y is required when stdin or stdout is not a TTY. The commands here never have a terminal, so install passes -y.
 //   The caveat under update applies to install too.
 // - update: -y accepts a command that a marketplace declares, without a prompt. This marketplace must declare no command, so
-//   -y accepts none. A later release must keep the marketplace free of commands. That stays open until the plugin exists.
+//   -y accepts none. The adapter does not check that, so a marketplace that declares a command would run it without a prompt.
 // - uninstall: -y only skips the confirmation for --prune, and this adapter never passes --prune. So uninstall passes no -y.
 // - list: --json prints the listing. The help gives no scope option and does not describe the fields, so the listing has no
 //   verified scope field. A listing that names the plugin does not confirm a scope.
