@@ -437,6 +437,9 @@ const runChange = async (action: "update" | "uninstall", options: FlowOptions, i
     io.out(DRY_RUN_DONE);
     return hasError(plans.flatMap(({ pass }) => pass.steps.map(rowOf))) ? 1 : 0;
   }
+  // A dry pass that printed an error row makes the command fail, even when the real pass that follows succeeds. The real pass
+  // still runs, because update and uninstall have no prompt to stop at.
+  const dryFailed = hasError(plans.flatMap(({ pass }) => pass.steps.map(rowOf)));
   io.out("Results:");
   const rows: Row[] = [];
   for (const { target } of plans) {
@@ -446,7 +449,7 @@ const runChange = async (action: "update" | "uninstall", options: FlowOptions, i
     printRows(io, [...stepRows, ...recordRows]);
     rows.push(...stepRows, ...recordRows);
   }
-  return hasError(rows) ? 1 : 0;
+  return dryFailed || hasError(rows) ? 1 : 0;
 };
 
 export const update = (options: FlowOptions, io: FlowIo): Promise<number> =>

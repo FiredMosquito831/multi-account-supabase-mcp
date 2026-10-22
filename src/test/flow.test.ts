@@ -598,7 +598,8 @@ test("update runs its real pass after the dry pass fails, and shows it in its ca
     const calls: string[] = [];
     const { io, lines } = harness(root, [fakeAgent("claude", ["global"], calls, { failsInDryRun: true })]);
     await record("claude", scopeKey("global", io.projectDir), { kind: "mcp-entry", name: "recorded" });
-    await update({}, io);
+    // The dry pass printed an error row, so the exit code is 1, even though the real pass succeeded.
+    assert.equal(await update({}, io), 1);
     assert.equal(lines.includes("[error] claude global: dry pass fails"), true);
     assert.equal(calls.includes("update claude global real"), true);
     assert.equal(lines.includes("[ok] claude global: Did update claude."), true);
@@ -609,7 +610,8 @@ test("uninstall runs its real pass after the dry pass fails, and shows it in its
     const calls: string[] = [];
     const { io, lines } = harness(root, [fakeAgent("claude", ["global"], calls, { failsInDryRun: true })]);
     await record("claude", scopeKey("global", io.projectDir), { kind: "mcp-entry", name: "recorded" });
-    await uninstall({}, io);
+    // The dry pass printed an error row, so the exit code is 1, even though the real pass succeeded.
+    assert.equal(await uninstall({}, io), 1);
     assert.equal(lines.includes("[error] claude global: dry pass fails"), true);
     assert.equal(calls.includes("uninstall claude global real"), true);
     assert.equal(lines.includes("[ok] claude global: Did uninstall claude."), true);
