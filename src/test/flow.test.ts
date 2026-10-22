@@ -593,28 +593,76 @@ test("a real pass that throws for one agent records no server item for the other
     assert.deepEqual(await recordedItems("claude", scopeKey("global", io.projectDir)), []);
   }));
 
-test("update runs its real pass after the dry pass fails, and shows it in its call and its line", () =>
+test("update stops before any change when its dry pass has an error row: it prints the plan, exits 1, and writes nothing", () =>
   inRoot(async (root) => {
     const calls: string[] = [];
     const { io, lines } = harness(root, [fakeAgent("claude", ["global"], calls, { failsInDryRun: true })]);
-    await record("claude", scopeKey("global", io.projectDir), { kind: "mcp-entry", name: "recorded" });
-    // The dry pass printed an error row, so the exit code is 1, even though the real pass succeeded.
+    const key = scopeKey("global", io.projectDir);
+    await record("claude", key, { kind: "mcp-entry", name: "recorded" });
     assert.equal(await update({}, io), 1);
+    assert.equal(calls.includes("update claude global dry"), true);
+    assert.equal(calls.includes("update claude global real"), false);
     assert.equal(lines.includes("[error] claude global: dry pass fails"), true);
-    assert.equal(calls.includes("update claude global real"), true);
-    assert.equal(lines.includes("[ok] claude global: Did update claude."), true);
+    assert.equal(lines.includes("Results:"), false);
+    assert.deepEqual(await recordedItems("claude", key), [{ kind: "mcp-entry", name: "recorded" }]);
   }));
 
-test("uninstall runs its real pass after the dry pass fails, and shows it in its call and its line", () =>
+test("uninstall stops before any change when its dry pass has an error row: it prints the plan, exits 1, and removes nothing", () =>
   inRoot(async (root) => {
     const calls: string[] = [];
     const { io, lines } = harness(root, [fakeAgent("claude", ["global"], calls, { failsInDryRun: true })]);
-    await record("claude", scopeKey("global", io.projectDir), { kind: "mcp-entry", name: "recorded" });
-    // The dry pass printed an error row, so the exit code is 1, even though the real pass succeeded.
+    const key = scopeKey("global", io.projectDir);
+    await record("claude", key, { kind: "mcp-entry", name: "recorded" });
     assert.equal(await uninstall({}, io), 1);
+    assert.equal(calls.includes("uninstall claude global dry"), true);
+    assert.equal(calls.includes("uninstall claude global real"), false);
     assert.equal(lines.includes("[error] claude global: dry pass fails"), true);
-    assert.equal(calls.includes("uninstall claude global real"), true);
-    assert.equal(lines.includes("[ok] claude global: Did uninstall claude."), true);
+    assert.equal(lines.includes("Results:"), false);
+    assert.deepEqual(await recordedItems("claude", key), [{ kind: "mcp-entry", name: "recorded" }]);
+  }));
+
+test("a named agent with no record in the scope gets a skipped line, with --scope, and no agent runs", () =>
+  inRoot(async (root) => {
+    const calls: string[] = [];
+    const { io, lines } = harness(root, [fakeAgent("claude", ["global", "project"], calls)]);
+    assert.equal(await uninstall({ agents: ["claude"], scope: "project" }, io), 0);
+    assert.deepEqual(calls, []);
+    assert.equal(
+      lines.includes("[skipped] claude project: no record in this scope, so nothing was changed."),
+      true,
+    );
+  }));
+
+test("a named agent with no record gets a skipped line in each scope it supports, without --scope", () =>
+  inRoot(async (root) => {
+    const { io, lines } = harness(root, [fakeAgent("claude", ["global", "project"], [])]);
+    assert.equal(await uninstall({ agents: ["claude"] }, io), 0);
+    assert.equal(
+      lines.includes("[skipped] claude global: no record in this scope, so nothing was changed."),
+      true,
+    );
+    assert.equal(
+      lines.includes("[skipped] claude project: no record in this scope, so nothing was changed."),
+      true,
+    );
+  }));
+
+test("a step line that holds a token shape prints it as [redacted], and a line without one is unchanged", () =>
+  inRoot(async (root) => {
+    const broken: AgentAdapter = {
+      ...fakeAgent("claude", ["global"], []),
+      install: async () => {
+        throw new Error("failed with sbp_TEST-ONLY-VALUE");
+      },
+    };
+    const { io, lines } = harness(root, [broken, fakeAgent("codex", ["global"], [], { throws: true })]);
+    assert.equal(await install({ agents: ["claude", "codex"], yes: true }, io), 1);
+    assert.equal(lines.includes("[error] claude global: failed with [redacted]"), true);
+    assert.equal(lines.includes("[error] codex global: boom"), true);
+    assert.equal(
+      lines.some((line) => line.includes("sbp_")),
+      false,
+    );
   }));
 
 test("doctor with an adapter that throws still prints the other steps, and exits 1", () =>

@@ -43,6 +43,7 @@ const APPLY_QUESTION = "Apply these changes? [y/N] ";
 const UNKNOWN_SCOPE = "unknown scope; the scopes are global, project and local. Nothing was changed.";
 const NOTHING_CHANGED = "Nothing was changed.";
 const DRY_RUN_DONE = "Dry run: nothing was changed.";
+const NO_RECORD = "no record in this scope, so nothing was changed.";
 const PLAN_ERROR = "The plan has an error, so nothing was changed. Fix the problem and run the command again.";
 
 // The inputs of one command. Agents are named by id. Undefined or an empty list means every agent. The scope is as the command
@@ -100,9 +101,13 @@ const rowOf = (step: Step): Row => ({
   message: step.message,
 });
 
+// The shape of a Supabase access token. A token is never printed, so any text of this shape in a step line is shown as [redacted].
+const TOKEN_SHAPE = /sbp_[A-Za-z0-9_-]+/g;
+
+// Prints each row on one line. The whole line is checked for a token shape before it is printed.
 const printRows = (io: FlowIo, rows: readonly Row[]): void => {
   for (const row of rows) {
-    io.out(`[${row.status}] ${row.label}: ${row.message}`);
+    io.out(`[${row.status}] ${row.label}: ${row.message}`.replace(TOKEN_SHAPE, "[redacted]"));
   }
 };
 
@@ -367,11 +372,13 @@ const targetOf = async (
     if (named !== undefined && !named.includes(adapter.id)) {
       continue;
     }
-    if (named !== undefined && scopeNamed) {
+    const supported = adapter.scopes.includes(scope);
+    // A named agent that lacks a named scope is passed on, so the planner refuses the whole command.
+    if (!supported && named !== undefined && scopeNamed) {
       agents.push(adapter.id);
       continue;
     }
-    if (!adapter.scopes.includes(scope)) {
+    if (!supported) {
       if (scopeNamed) {
         notes.push({ status: "skipped", label: `${adapter.id} ${scope}`, message: unsupportedReason(adapter.id, scope) });
       }
@@ -379,6 +386,11 @@ const targetOf = async (
     }
     if (await hasRecord(adapter.id, key)) {
       agents.push(adapter.id);
+      continue;
+    }
+    // A named agent with no record gets a line of its own, so every named agent appears in the output, with or without a scope.
+    if (named !== undefined) {
+      notes.push({ status: "skipped", label: `${adapter.id} ${scope}`, message: NO_RECORD });
     }
   }
   return { scope, agents, notes };
@@ -437,9 +449,11 @@ const runChange = async (action: "update" | "uninstall", options: FlowOptions, i
     io.out(DRY_RUN_DONE);
     return hasError(plans.flatMap(({ pass }) => pass.steps.map(rowOf))) ? 1 : 0;
   }
-  // A dry pass that printed an error row makes the command fail, even when the real pass that follows succeeds. The real pass
-  // still runs, because update and uninstall have no prompt to stop at.
-  const dryFailed = hasError(plans.flatMap(({ pass }) => pass.steps.map(rowOf)));
+  // A dry pass with an error row stops the command before any change, as install does. The owner fixes the problem and runs again.
+  if (hasError(plans.flatMap(({ pass }) => pass.steps.map(rowOf)))) {
+    io.out(PLAN_ERROR);
+    return 1;
+  }
   io.out("Results:");
   const rows: Row[] = [];
   for (const { target } of plans) {
@@ -449,7 +463,7 @@ const runChange = async (action: "update" | "uninstall", options: FlowOptions, i
     printRows(io, [...stepRows, ...recordRows]);
     rows.push(...stepRows, ...recordRows);
   }
-  return dryFailed || hasError(rows) ? 1 : 0;
+  return hasError(rows) ? 1 : 0;
 };
 
 export const update = (options: FlowOptions, io: FlowIo): Promise<number> =>
