@@ -1,6 +1,5 @@
 import type { Stats } from "node:fs";
 import { lstat, readFile, stat } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { ensureFolders, foldersToMake, isFolder, removeRecordedFolders } from "./folders.js";
@@ -27,7 +26,10 @@ import { type AgentAdapter, type Context, type Step, UnsupportedScope } from "./
 // bytes. A backup takes the first free name, so an earlier backup is never replaced. Each backup is on the record, and
 // uninstall keeps every backup that is still on disk and names it, unless it stops before it reads the backups. The folders
 // this tool makes are recorded too, and uninstall removes them, deepest first, only when they are empty. The project folder
-// belongs to the owner: install and update refuse it when it does not exist, and uninstall never removes it.
+// belongs to the owner: install and update refuse it when it does not exist, and uninstall never removes it. Every read of the
+// environment comes from the context, so a config home or a home given there is used. Install, update and uninstall act only on
+// an entry whose command is the one this tool writes. An entry that differs is left in place with its record, and the step is
+// an error that says how to remove it by hand. An unedited recorded entry is replaced by install, after a backup.
 
 type ActiveScope = "global" | "project";
 
@@ -129,8 +131,8 @@ const keptBackups = async (items: readonly Item[]): Promise<string[]> => {
 // are empty, and it keeps each backup that is still on disk, so that a later uninstall still names it. Every other item is
 // dropped. The record is written in two steps, so a crash between them loses the record, but no backup and no folder is
 // ever removed by that loss.
-const keepRecord = async (key: string, items: readonly Item[], backups: readonly string[], dryRun: boolean): Promise<void> => {
-  if (dryRun) {
+const keepRecord = async (ctx: Context, key: string, items: readonly Item[], backups: readonly string[]): Promise<void> => {
+  if (ctx.dryRun) {
     return;
   }
   const folders: string[] = [];
@@ -139,25 +141,25 @@ const keepRecord = async (key: string, items: readonly Item[], backups: readonly
       folders.push(item.path);
     }
   }
-  await forget("opencode", key);
+  await forget("opencode", key, undefined, ctx.env);
   for (const folder of folders) {
-    await record("opencode", key, { kind: "directory", path: folder });
+    await record("opencode", key, { kind: "directory", path: folder }, undefined, ctx.env);
   }
   for (const backup of backups) {
-    await record("opencode", key, { kind: "file", path: backup, createdByUs: true });
+    await record("opencode", key, { kind: "file", path: backup, createdByUs: true }, undefined, ctx.env);
   }
 };
 
 // Ends the record of a scope, and returns the error code when the record cannot be written. The caller's step then says that
 // the change was made and the record was not finished, and it names the backups kept.
 const finishRecord = async (
+  ctx: Context,
   key: string,
   items: readonly Item[],
   backups: readonly string[],
-  dryRun: boolean,
 ): Promise<string | undefined> => {
   try {
-    await keepRecord(key, items, backups, dryRun);
+    await keepRecord(ctx, key, items, backups);
     return undefined;
   } catch (error) {
     return codeOf(error);
@@ -212,13 +214,34 @@ const foldersNote = (dryRun: boolean, folders: readonly string[]): string =>
     ? ""
     : ` ${pick(dryRun, "Would remove the folders this tool made, if they are empty", "Removed the folders this tool made, because they were empty")}: ${folders.join(", ")}.`;
 
-// The folder of opencode's global configuration: .config in the home folder, then opencode. An XDG_CONFIG_HOME value that is
-// an absolute path replaces the .config folder. Only the default folder was observed. The effect of the variable, and the rule
-// that a relative value is ignored, are ASSUMED.
-export const opencodeGlobalDir = (env: NodeJS.ProcessEnv, homeDir: string): string => {
+// The home folder, from the environment that the context carries. Windows keeps it in USERPROFILE, and other systems in HOME.
+const homeOf = (env: NodeJS.ProcessEnv): string | undefined => {
+  const value = process.platform === "win32" ? env.USERPROFILE : env.HOME;
+  return value === undefined || value === "" ? undefined : value;
+};
+
+// Raised when the global folder needs the home folder, and the environment has none. The process's own home folder is never
+// used instead, so nothing is written there by mistake. The message is the step's text.
+class HomeUnknown extends Error {
+  constructor() {
+    super("The home folder is not known from the environment, so nothing was changed.");
+    this.name = "HomeUnknown";
+  }
+}
+
+// The folder of opencode's global configuration, from the environment that the context carries. An XDG_CONFIG_HOME value that
+// is an absolute path gives the folder directly. Otherwise the folder is .config in the home folder, then opencode. Only the
+// default folder was observed. The effect of the variable, and the rule that a relative value is ignored, are ASSUMED.
+export const opencodeGlobalDir = (env: NodeJS.ProcessEnv): string => {
   const configured = env.XDG_CONFIG_HOME;
-  const configHome = configured && path.isAbsolute(configured) ? configured : path.join(homeDir, ".config");
-  return path.join(configHome, "opencode");
+  if (configured && path.isAbsolute(configured)) {
+    return path.join(configured, "opencode");
+  }
+  const home = homeOf(env);
+  if (home === undefined) {
+    throw new HomeUnknown();
+  }
+  return path.join(home, ".config", "opencode");
 };
 
 // The file and the folder of a scope, and the record key. When an entry is recorded for the scope, the file is the one
@@ -227,11 +250,11 @@ export const opencodeGlobalDir = (env: NodeJS.ProcessEnv, homeDir: string): stri
 // its path from the environment (global) or from the project folder (project), even when backups are recorded for it.
 const targetOf = async (ctx: Context, scope: ActiveScope): Promise<Target> => {
   const key = scopeKey(scope, ctx.projectDir);
-  const entry = (await recordedItems("opencode", key)).find(isOurEntry);
+  const entry = (await recordedItems("opencode", key, undefined, ctx.env)).find(isOurEntry);
   if (entry !== undefined) {
     return { folder: path.dirname(entry.path), file: entry.path, key, recorded: true };
   }
-  const folder = path.resolve(scope === "global" ? opencodeGlobalDir(process.env, os.homedir()) : ctx.projectDir);
+  const folder = path.resolve(scope === "global" ? opencodeGlobalDir(ctx.env) : ctx.projectDir);
   return { folder, file: path.join(folder, FILE_NAME), key, recorded: false };
 };
 
@@ -485,6 +508,19 @@ const comparable = (doc: Doc): Doc => {
 const sameApartFromEntry = (before: Doc, after: Doc): boolean =>
   isDeepStrictEqual(comparable(before), comparable(after));
 
+// The entry this tool writes for the program it runs. An entry in the file that differs from it is not this tool's entry in its
+// present form, so update and uninstall leave it in place.
+const entryFor = (ctx: Context): Doc => {
+  const { command, args } = directEntry(ctx.cliPath);
+  return { type: "local", command: [command, ...args], enabled: true };
+};
+
+// The text for an edited entry, in install, update and uninstall alike. Each of them leaves the entry in place, and the text says
+// how to remove it by hand. The record stays until the owner removes the entry. The wording follows Codex's text for a global
+// entry that was edited.
+const editedText = (file: string): string =>
+  `The entry ${DIRECT_KEY} was edited, so it was left in place. To remove it, delete the entry named ${DIRECT_KEY} by hand from the opencode configuration file (the "${TABLE}" section) in ${file}. Then run this command again. The record stays until then.`;
+
 const installIn = async (ctx: Context, scope: ActiveScope): Promise<Step> => {
   const target = await targetOf(ctx, scope);
   const { folder, file, key } = target;
@@ -505,6 +541,16 @@ const installIn = async (ctx: Context, scope: ActiveScope): Promise<Step> => {
   if (loaded.kind === "unexpected") {
     return step(scope, "error", unexpected(file));
   }
+  // A recorded entry that differs from the one this tool writes, for example one that someone edited, is never replaced. It is
+  // left in place with its record, and the step is an error.
+  if (
+    target.recorded &&
+    loaded.kind === "ok" &&
+    entryOf(loaded.doc) !== undefined &&
+    !isDeepStrictEqual(entryOf(loaded.doc), entryFor(ctx))
+  ) {
+    return step(scope, "error", editedText(file));
+  }
   const before: Doc = loaded.kind === "ok" ? loaded.doc : {};
   // An entry under our key is ours only when the record lists it. Any other entry is refused, and never taken over. The
   // check is exact, because the file was parsed and the entry is read from it.
@@ -515,8 +561,7 @@ const installIn = async (ctx: Context, scope: ActiveScope): Promise<Step> => {
   if (loaded.kind === "ok" && rewriteWouldChange(jsonPart(loaded.text))) {
     return step(scope, "error", rewriteRefused(file));
   }
-  const { command, args } = directEntry(ctx.cliPath);
-  const entry = { type: "local", command: [command, ...args], enabled: true };
+  const entry = entryFor(ctx);
   const text = render(withEntry(before, entry), layoutOf(loaded.kind === "ok" ? loaded.text : ""));
   // The new text is read back before anything is written. It must hold the entry, and nothing else may differ in value.
   const after = parseDocument(text);
@@ -537,15 +582,15 @@ const installIn = async (ctx: Context, scope: ActiveScope): Promise<Step> => {
   // that exists. A dry run records nothing.
   if (!ctx.dryRun) {
     for (const folderToMake of made) {
-      await record("opencode", key, { kind: "directory", path: folderToMake });
+      await record("opencode", key, { kind: "directory", path: folderToMake }, undefined, ctx.env);
     }
     if (loaded.kind === "missing") {
       // The file did not exist before, so this tool creates it, and uninstall may remove it.
-      await record("opencode", key, { kind: "file", path: file, createdByUs: true });
+      await record("opencode", key, { kind: "file", path: file, createdByUs: true }, undefined, ctx.env);
     }
-    await record("opencode", key, { kind: "json-entry", path: file, pointer: ENTRY_POINTER });
+    await record("opencode", key, { kind: "json-entry", path: file, pointer: ENTRY_POINTER }, undefined, ctx.env);
     if (backup !== undefined) {
-      await record("opencode", key, { kind: "file", path: backup, createdByUs: true });
+      await record("opencode", key, { kind: "file", path: backup, createdByUs: true }, undefined, ctx.env);
     }
   }
   await ensureFolders(ctx, base, folder);
@@ -579,7 +624,7 @@ type Progress = { file?: string; kept?: readonly string[] };
 const uninstallIn = async (ctx: Context, scope: ActiveScope, progress: Progress): Promise<Step> => {
   const target = await targetOf(ctx, scope);
   progress.file = target.file;
-  const items = await recordedItems("opencode", target.key);
+  const items = await recordedItems("opencode", target.key, undefined, ctx.env);
   // The backups this tool recorded that are still on disk. Uninstall never removes a backup, and names each one it keeps.
   const kept = await keptBackups(items);
   progress.kept = kept;
@@ -591,7 +636,7 @@ const uninstallIn = async (ctx: Context, scope: ActiveScope, progress: Progress)
     if (folders.length === 0) {
       return step(scope, "skipped", message);
     }
-    const unfinished = await finishRecord(target.key, items, kept, ctx.dryRun);
+    const unfinished = await finishRecord(ctx, target.key, items, kept);
     if (unfinished !== undefined) {
       return step(scope, "error", `${message} Its record could not be finished (${unfinished}).`);
     }
@@ -604,6 +649,11 @@ const uninstallIn = async (ctx: Context, scope: ActiveScope, progress: Progress)
   }
   if (loaded.kind === "unexpected") {
     return step(scope, "error", `${unexpected(file)}${backupsKept(ctx.dryRun, kept)}`);
+  }
+  // An entry that differs from the one this tool writes, for example one that someone edited, is kept with its record. Nothing
+  // is removed, so the record stays as it is.
+  if (loaded.kind === "ok" && entryOf(loaded.doc) !== undefined && !isDeepStrictEqual(entryOf(loaded.doc), entryFor(ctx))) {
+    return step(scope, "error", `${editedText(file)}${backupsKept(ctx.dryRun, kept)}`);
   }
   // The config file goes only when this tool created it. The folders the record lists on the way to the folder go with it,
   // but only the empty ones.
@@ -633,7 +683,7 @@ const uninstallIn = async (ctx: Context, scope: ActiveScope, progress: Progress)
         ),
       );
     }
-    const unfinished = await finishRecord(key, items, kept, ctx.dryRun);
+    const unfinished = await finishRecord(ctx, key, items, kept);
     if (unfinished !== undefined) {
       return step(
         scope,
@@ -654,7 +704,7 @@ const uninstallIn = async (ctx: Context, scope: ActiveScope, progress: Progress)
   if (loaded.kind === "missing" || entryOf(loaded.doc) === undefined) {
     // Nothing of ours is in the file. When the file is gone, the folders the record lists go too, if they are empty.
     const folders = loaded.kind === "missing" ? await removeFolders(ctx, items, chain) : [];
-    const unfinished = await finishRecord(key, items, kept, ctx.dryRun);
+    const unfinished = await finishRecord(ctx, key, items, kept);
     const message = `${absent(file, ctx.dryRun)}${foldersNote(ctx.dryRun, folders)}${backupsKept(ctx.dryRun, kept)}`;
     if (unfinished !== undefined) {
       return step(scope, "error", `${message} Its record could not be finished (${unfinished}).`);
@@ -673,7 +723,7 @@ const uninstallIn = async (ctx: Context, scope: ActiveScope, progress: Progress)
   // the change, and the backups that remain stay on the record.
   const backup = await freeBackupName(file);
   if (!ctx.dryRun) {
-    await record("opencode", key, { kind: "file", path: backup, createdByUs: true });
+    await record("opencode", key, { kind: "file", path: backup, createdByUs: true }, undefined, ctx.env);
   }
   try {
     await ctx.writeFile(backup, loaded.text);
@@ -686,7 +736,7 @@ const uninstallIn = async (ctx: Context, scope: ActiveScope, progress: Progress)
     return step(scope, "error", `${fileNotWritten(file, backup, error)}${backupsKept(ctx.dryRun, kept)}`);
   }
   const names = [...kept, backup];
-  const unfinished = await finishRecord(key, items, names, ctx.dryRun);
+  const unfinished = await finishRecord(ctx, key, items, names);
   if (unfinished !== undefined) {
     return step(
       scope,
@@ -709,6 +759,9 @@ const uninstallSafely = async (ctx: Context, scope: ActiveScope): Promise<Step> 
   try {
     return await uninstallIn(ctx, scope, progress);
   } catch (error) {
+    if (error instanceof HomeUnknown) {
+      return step(scope, "error", error.message);
+    }
     const code = codeOf(error);
     if (progress.file === undefined || progress.kept === undefined) {
       return step(
@@ -760,9 +813,15 @@ export const opencodeAdapter: AgentAdapter = {
   doctor: async (ctx) => {
     const steps: Step[] = [];
     for (const scope of ["global", "project"] as const) {
-      const found = await doctorIn(ctx, scope);
-      if (found !== undefined) {
-        steps.push(found);
+      // A scope that cannot be checked gives an error step of its own, so the other scope is still checked.
+      try {
+        const found = await doctorIn(ctx, scope);
+        if (found !== undefined) {
+          steps.push(found);
+        }
+      } catch (error) {
+        const reason = error instanceof Error && error.message !== "" ? error.message : "an unknown error";
+        steps.push(step(scope, "error", `The ${scope} scope could not be checked: ${reason}`));
       }
     }
     return steps;

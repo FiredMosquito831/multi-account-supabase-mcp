@@ -183,7 +183,10 @@ const namesBackup = (message: string, backup: string): boolean =>
   message.split(backup).slice(1).some((rest) => !/^\d/.test(rest));
 
 // A context for a run in the temporary folders. The file functions can be replaced, and no command can run.
-const contextIn = (root: string, options: { dryRun?: boolean; present?: boolean; fs?: FileOps } = {}): Context =>
+const contextIn = (
+  root: string,
+  options: { dryRun?: boolean; present?: boolean; fs?: FileOps; env?: NodeJS.ProcessEnv } = {},
+): Context =>
   makeContext({
     projectDir: projectIn(root),
     cliPath: programIn(root),
@@ -192,13 +195,14 @@ const contextIn = (root: string, options: { dryRun?: boolean; present?: boolean;
     present: () => options.present ?? true,
     run: noCommands,
     fs: options.fs,
+    env: options.env,
   });
 
 // The no-record case that every uninstall test also runs. An entry under our key that the record does not list is left as
 // it is, and the step is skipped. The file is the one the scope would use when nothing is recorded.
 const unrecordedEntryStays = async (root: string, scope: (typeof SCOPES)[number]): Promise<void> => {
   const file =
-    scope === "global" ? path.join(opencodeGlobalDir(process.env, os.homedir()), "opencode.json") : projectFileIn(root);
+    scope === "global" ? path.join(opencodeGlobalDir(process.env), "opencode.json") : projectFileIn(root);
   const text = `${JSON.stringify({ mcp: { [NAME]: entryIn(root) } }, null, 2)}\n`;
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, text);
@@ -246,17 +250,13 @@ test("a global install into an empty configuration folder creates opencode.json 
     ]);
   }));
 
-test("install keeps another server and another top-level key unchanged, and replaces an earlier entry that this tool recorded", () =>
+test("install keeps another server and another top-level key unchanged, and replaces the entry this tool recorded", () =>
   inTemporaryRoot(async (root) => {
     const file = projectFileIn(root);
     const other = { type: "remote", url: "https://example.com/mcp" };
     await mkdir(projectIn(root), { recursive: true });
     assert.equal((await opencodeAdapter.install(contextIn(root), "project"))[0].status, "ok");
-    const before = `${JSON.stringify(
-      { theme: "dark", mcp: { other, [NAME]: { type: "local", command: ["old-node", "old-cli"], enabled: true } } },
-      null,
-      4,
-    )}\n`;
+    const before = `${JSON.stringify({ theme: "dark", mcp: { other, [NAME]: entryIn(root) } }, null, 4)}\n`;
     await writeFile(file, before);
     const steps = await opencodeAdapter.install(contextIn(root), "project");
     assert.equal(steps[0].status, "ok");
@@ -349,24 +349,20 @@ test("install refuses an entry under our key that the record does not list, in e
     assert.equal(existsSync(statePath("opencode")), false);
   }));
 
-test("update replaces the entry that install recorded, and keeps the other keys", () =>
+test("update rewrites the entry this tool wrote, and keeps the other keys", () =>
   inTemporaryRoot(async (root) => {
     const file = globalFileIn(root);
     const other = { type: "remote", url: "https://example.com/mcp" };
     assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
-    const edited = `${JSON.stringify(
-      { theme: "dark", mcp: { other, [NAME]: { type: "local", command: ["old-node"], enabled: true } } },
-      null,
-      2,
-    )}\n`;
-    await writeFile(file, edited);
+    const withOther = `${JSON.stringify({ theme: "dark", mcp: { other, [NAME]: entryIn(root) } }, null, 2)}\n`;
+    await writeFile(file, withOther);
     const steps = await opencodeAdapter.update(contextIn(root), "global");
     assert.equal(steps[0].status, "ok");
     assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {
       theme: "dark",
       mcp: { other, [NAME]: entryIn(root) },
     });
-    assert.equal(await readFile(`${file}.bak`, "utf8"), edited);
+    assert.equal(await readFile(`${file}.bak`, "utf8"), withOther);
   }));
 
 test("a write that fails after the records are made leaves records that uninstall reads as absent, and uninstall forgets them without an error", () =>
@@ -640,10 +636,12 @@ test("the global folder is the XDG configuration folder when that is an absolute
   inTemporaryRoot(async () => {
     const home = path.resolve("home-for-test");
     const xdg = path.resolve("xdg-for-test");
-    assert.equal(opencodeGlobalDir({ XDG_CONFIG_HOME: xdg }, home), path.join(xdg, "opencode"));
-    assert.equal(opencodeGlobalDir({ XDG_CONFIG_HOME: "" }, home), path.join(home, ".config", "opencode"));
-    assert.equal(opencodeGlobalDir({}, home), path.join(home, ".config", "opencode"));
-    assert.equal(opencodeGlobalDir({ XDG_CONFIG_HOME: "relative" }, home), path.join(home, ".config", "opencode"));
+    const homeEnv = { HOME: home, USERPROFILE: home };
+    assert.equal(opencodeGlobalDir({ XDG_CONFIG_HOME: xdg }), path.join(xdg, "opencode"));
+    assert.equal(opencodeGlobalDir({ ...homeEnv, XDG_CONFIG_HOME: "" }), path.join(home, ".config", "opencode"));
+    assert.equal(opencodeGlobalDir(homeEnv), path.join(home, ".config", "opencode"));
+    assert.equal(opencodeGlobalDir({ ...homeEnv, XDG_CONFIG_HOME: "relative" }), path.join(home, ".config", "opencode"));
+    assert.throws(() => opencodeGlobalDir({}), /home folder is not known/);
   }));
 
 test("uninstall removes a file this tool created, with its folder, and keeps a file the user has since added keys to", () =>
@@ -1169,6 +1167,132 @@ test("uninstall never removes the project folder, even when a record lists it", 
     assert.equal(steps[0].status, "skipped");
     assert.equal(existsSync(project), true);
     await unrecordedEntryStays(root, "project");
+  }));
+
+test("the global folder comes from the environment the context carries: a config home there is used, and a home there is used when no config home is given", () =>
+  inTemporaryRoot(async (root) => {
+    const altConfig = path.join(root, "alt-config");
+    const configEnv = { ...process.env, XDG_CONFIG_HOME: altConfig };
+    assert.equal((await opencodeAdapter.install(contextIn(root, { env: configEnv }), "global"))[0].status, "ok");
+    assert.equal(existsSync(path.join(altConfig, "opencode", "opencode.json")), true);
+    assert.equal(existsSync(globalFileIn(root)), false);
+    assert.equal((await opencodeAdapter.uninstall(contextIn(root, { env: configEnv }), "global"))[0].status, "ok");
+    const altHome = path.join(root, "alt-home");
+    const homeEnv = { ...process.env, XDG_CONFIG_HOME: undefined, HOME: altHome, USERPROFILE: altHome };
+    assert.equal((await opencodeAdapter.install(contextIn(root, { env: homeEnv }), "global"))[0].status, "ok");
+    assert.equal(existsSync(path.join(altHome, ".config", "opencode", "opencode.json")), true);
+    // Nothing is written under the real home, which the isolated environment names as the root's home folder.
+    assert.equal(existsSync(path.join(root, "home", ".config")), false);
+    assert.equal((await opencodeAdapter.uninstall(contextIn(root, { env: homeEnv }), "global"))[0].status, "ok");
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("a global install with no home folder and no config home in the context's environment is refused, and nothing is written under the real home", () =>
+  inTemporaryRoot(async (root) => {
+    const env = { MULTI_ACCOUNT_SUPABASE_HOME: path.join(root, "data") };
+    await assert.rejects(opencodeAdapter.install(contextIn(root, { env }), "global"), /home folder is not known/);
+    assert.equal(existsSync(path.join(root, "home", ".config")), false);
+    assert.equal(existsSync(path.join(root, "config")), false);
+  }));
+
+test("doctor checks each scope on its own: an unreadable project file gives an error step there, and the global step is still ok", () =>
+  inTemporaryRoot(async (root) => {
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    await mkdir(projectIn(root), { recursive: true });
+    assert.equal((await opencodeAdapter.install(contextIn(root), "project"))[0].status, "ok");
+    // A folder where the project file should be: reading it fails, and the other scope is still checked.
+    await rm(projectFileIn(root));
+    await mkdir(projectFileIn(root));
+    const steps = await opencodeAdapter.doctor(contextIn(root));
+    assert.deepEqual(
+      steps.map((step) => [step.scope, step.status]),
+      [
+        ["global", "ok"],
+        ["project", "error"],
+      ],
+    );
+  }));
+
+test("doctor gives each scope its own error step when the record cannot be read", () =>
+  inTemporaryRoot(async (root) => {
+    await mkdir(path.dirname(statePath("opencode")), { recursive: true });
+    await writeFile(statePath("opencode"), "{ not json");
+    const steps = await opencodeAdapter.doctor(contextIn(root));
+    assert.deepEqual(
+      steps.map((step) => [step.scope, step.status]),
+      [
+        ["global", "error"],
+        ["project", "error"],
+      ],
+    );
+  }));
+
+test("uninstall leaves an entry whose command was edited in place, keeps its record, and says why", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    const edited = `${JSON.stringify({ mcp: { [NAME]: { type: "local", command: ["other-node", "other-cli", "serve"], enabled: true } } }, null, 2)}\n`;
+    await writeFile(file, edited);
+    const recorded = await recordedItems("opencode", "global");
+    const steps = await opencodeAdapter.uninstall(contextIn(root), "global");
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes(file), true);
+    assert.equal(steps[0].message.includes("was edited, so it was left in place"), true);
+    assert.equal(steps[0].message.includes("The record stays until then."), true);
+    assert.equal(await readFile(file, "utf8"), edited);
+    assert.equal(existsSync(`${file}.bak`), false);
+    assert.deepEqual(await recordedItems("opencode", "global"), recorded);
+    await forget("opencode", "global");
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("update leaves an entry whose command was edited in place, and keeps its record", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    const edited = `${JSON.stringify({ mcp: { [NAME]: { type: "local", command: ["other-node", "other-cli", "serve"], enabled: true } } }, null, 2)}\n`;
+    await writeFile(file, edited);
+    const recorded = await recordedItems("opencode", "global");
+    const steps = await opencodeAdapter.update(contextIn(root), "global");
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes("was edited, so it was left in place"), true);
+    assert.equal(steps[0].message.includes("The record stays until then."), true);
+    assert.equal(await readFile(file, "utf8"), edited);
+    assert.equal(existsSync(`${file}.bak`), false);
+    assert.deepEqual(await recordedItems("opencode", "global"), recorded);
+    await forget("opencode", "global");
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("install leaves a recorded entry that was edited in place, keeps its record, and the step is an error", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    const edited = `${JSON.stringify({ mcp: { [NAME]: { type: "local", command: ["other-node", "other-cli", "serve"], enabled: true } } }, null, 2)}\n`;
+    await writeFile(file, edited);
+    const recorded = await recordedItems("opencode", "global");
+    const steps = await opencodeAdapter.install(contextIn(root), "global");
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes(file), true);
+    assert.equal(steps[0].message.includes("was edited, so it was left in place"), true);
+    assert.equal(steps[0].message.includes("The record stays until then."), true);
+    assert.equal(await readFile(file, "utf8"), edited);
+    assert.equal(existsSync(`${file}.bak`), false);
+    assert.deepEqual(await recordedItems("opencode", "global"), recorded);
+    await forget("opencode", "global");
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("install replaces a recorded entry this tool wrote, keeps the other keys, and keeps a backup of the old bytes", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    const before = `${JSON.stringify({ theme: "dark", mcp: { [NAME]: entryIn(root) } }, null, 2)}\n`;
+    await writeFile(file, before);
+    const steps = await opencodeAdapter.install(contextIn(root), "global");
+    assert.equal(steps[0].status, "ok");
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { theme: "dark", mcp: { [NAME]: entryIn(root) } });
+    assert.equal(await readFile(`${file}.bak`, "utf8"), before);
   }));
 
 test("install writes a backup after it is recorded, and writes the file after the backup", () =>
