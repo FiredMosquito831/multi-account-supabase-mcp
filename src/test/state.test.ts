@@ -15,25 +15,32 @@ import {
 } from "../agents/state.js";
 
 const DATA_ENV = "MULTI_ACCOUNT_SUPABASE_HOME";
+// Every name that points a test at a home, configuration or data folder. Each test points all of them into its own folder.
+const FOLDER_NAMES = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "CODEX_HOME", "XDG_CONFIG_HOME", DATA_ENV];
 
 const entry: Item = { kind: "mcp-entry", name: "supabase" };
 
 // An absolute path, for a valid record that needs a path but never reads the file it names.
 const ABSOLUTE = path.resolve(os.tmpdir(), "state-test-item");
 
-// Each test gets its own data folder under the system temp folder. The data folder variable points at it too, so a call
-// that leaves out the folder still cannot reach the owner's real data folder. Both are restored and removed afterwards.
+// Each test gets its own data folder under the system temp folder. Every name in FOLDER_NAMES points into it, so a call that
+// leaves out the folder still cannot reach the owner's real files. The data folder variable is the folder itself, which the
+// tests that leave out the folder rely on. The names are restored, and the folder is removed, afterwards.
 const inDataFolder = async (run: (dataDir: string) => Promise<void>): Promise<void> => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "state-test-"));
-  const previous = process.env[DATA_ENV];
-  process.env[DATA_ENV] = dataDir;
+  const previous = FOLDER_NAMES.map((name): [string, string | undefined] => [name, process.env[name]]);
+  for (const name of FOLDER_NAMES) {
+    process.env[name] = name === DATA_ENV ? dataDir : path.join(dataDir, name.toLowerCase());
+  }
   try {
     await run(dataDir);
   } finally {
-    if (previous === undefined) {
-      delete process.env[DATA_ENV];
-    } else {
-      process.env[DATA_ENV] = previous;
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
     }
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -77,6 +84,13 @@ const withSaveHooks = async (fakes: Partial<typeof saveHooks>, run: () => Promis
   }
 };
 
+test("each test points the home, configuration and data names into its own temporary folder", () =>
+  inDataFolder(async (dataDir) => {
+    for (const name of FOLDER_NAMES) {
+      assert.equal(path.resolve(process.env[name] ?? "").startsWith(path.resolve(dataDir)), true, name);
+    }
+  }));
+
 test("statePath is the state folder of the data folder, named after the agent, with or without a folder given", () =>
   inDataFolder(async (dataDir) => {
     assert.equal(statePath("opencode", dataDir), path.join(dataDir, "state", "opencode.json"));
@@ -84,13 +98,18 @@ test("statePath is the state folder of the data folder, named after the agent, w
     assert.equal(statePath("codex"), path.join(dataDir, "state", "codex.json"));
   }));
 
-test("scopeKey is global for the global scope, and a project key holds the absolute folder", () => {
-  const folder = path.resolve(os.tmpdir(), "some-project");
-  assert.equal(scopeKey("global", folder), "global");
-  assert.equal(scopeKey("project", folder), `project:${folder}`);
-  // A relative folder is made absolute first, as path.resolve does.
-  assert.equal(scopeKey("project", "relative-project"), `project:${path.resolve("relative-project")}`);
-});
+test("scopeKey is global for the global scope, and a project key holds the absolute folder", () =>
+  inDataFolder(async () => {
+    // Every name must point into a temporary folder, so this test is isolated like the others.
+    for (const name of FOLDER_NAMES) {
+      assert.equal(path.resolve(process.env[name] ?? "").startsWith(path.resolve(os.tmpdir())), true, name);
+    }
+    const folder = path.resolve(os.tmpdir(), "some-project");
+    assert.equal(scopeKey("global", folder), "global");
+    assert.equal(scopeKey("project", folder), `project:${folder}`);
+    // A relative folder is made absolute first, as path.resolve does.
+    assert.equal(scopeKey("project", "relative-project"), `project:${path.resolve("relative-project")}`);
+  }));
 
 test("scopeKey for the local scope is local: followed by the absolute folder, and its record is kept apart from the project record", () =>
   inDataFolder(async (dataDir) => {
@@ -105,6 +124,16 @@ test("scopeKey for the local scope is local: followed by the absolute folder, an
     await forget("claude", localKey, dataDir);
     assert.deepEqual(await recordedItems("claude", localKey, dataDir), []);
     assert.deepEqual(await recordedItems("claude", scopeKey("project", folder), dataDir), [entry]);
+  }));
+
+test("a marketplace item is recorded and read back under its scope, and a marketplace item with an empty name is refused", () =>
+  inDataFolder(async (dataDir) => {
+    const marketplace: Item = { kind: "marketplace", name: "multi-account-supabase-mcp" };
+    await record("claude", "global", marketplace, dataDir);
+    assert.deepEqual(await recordedItems("claude", "global", dataDir), [marketplace]);
+    await assert.rejects(record("claude", "global", { kind: "marketplace", name: "" }, dataDir), {
+      message: "A recorded field must be a non-empty string.",
+    });
   }));
 
 test("readIfExists gives undefined for a missing file, the text of a file, and a read error for a folder", () =>
@@ -194,6 +223,11 @@ const wrongShapes: [string, unknown][] = [
     "a JSON pointer without a leading slash",
     { version: 1, scopes: { global: [{ kind: "json-entry", path: ABSOLUTE, pointer: "mcpServers/supabase" }] } },
   ],
+  [
+    "a marketplace item with a field besides its name",
+    { version: 1, scopes: { global: [{ kind: "marketplace", name: "supabase", path: ABSOLUTE }] } },
+  ],
+  ["a marketplace item with an empty name", { version: 1, scopes: { global: [{ kind: "marketplace", name: "" }] } }],
   ["a scope key that is neither global nor a project folder", { version: 1, scopes: { "project:relative": [] } }],
 ];
 

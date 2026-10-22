@@ -8,9 +8,13 @@ import { dataFolder } from "../paths.js";
 
 export type AgentId = "claude" | "codex" | "opencode" | "antigravity";
 
-// One thing the installer wrote, which uninstall may remove. Each kind names exactly what to remove.
+// One thing the installer wrote. Uninstall removes what each kind lists, with three limits. A marketplace is never removed: the
+// Claude adapter only reports it, and drops it from the record with its scope. A folder is removed only when it is empty. A
+// backup is a file item too, and the opencode adapter keeps each backup that is on disk and names it. Each kind names exactly
+// what the item covers.
 export type Item =
   | { kind: "mcp-entry"; name: string }
+  | { kind: "marketplace"; name: string }
   | { kind: "toml-table"; path: string; table: string }
   | { kind: "json-entry"; path: string; pointer: string }
   | { kind: "directory"; path: string }
@@ -100,6 +104,9 @@ const toItem = (value: unknown): Item => {
     case "mcp-entry":
       expectKeys(fields, ["kind", "name"]);
       return { kind: "mcp-entry", name: nonEmptyText(fields.name) };
+    case "marketplace":
+      expectKeys(fields, ["kind", "name"]);
+      return { kind: "marketplace", name: nonEmptyText(fields.name) };
     case "toml-table":
       expectKeys(fields, ["kind", "path", "table"]);
       return { kind: "toml-table", path: absolutePath(fields.path), table: nonEmptyText(fields.table) };
