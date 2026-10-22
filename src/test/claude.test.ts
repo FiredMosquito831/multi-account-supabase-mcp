@@ -222,8 +222,10 @@ test("install in each scope runs the marketplace add, then the plugin install wi
     }
   }));
 
-test("a failed marketplace add does not stop the install: when the install then succeeds, install gives an ok step and records the plugin", () =>
+test("a failed marketplace add with the marketplace recorded still runs the plugin install, and the install gives an ok step", () =>
   inTemporaryRoot(async (root) => {
+    // The first install adds the marketplace and records it, so a later failed add is against a marketplace this tool added.
+    await claudeAdapter.install(contextIn(root, { run: fakeRunner([]) }), "global");
     const effects: string[] = [];
     const failingAdd = fakeRunner(effects, (args) =>
       args[1] === "marketplace" ? { code: 1, stdout: "", stderr: "marketplace already added\n" } : OK,
@@ -237,11 +239,10 @@ test("a failed marketplace add does not stop the install: when the install then 
       steps.map((step) => [step.agent, step.scope, step.status]),
       [["claude", "global", "ok"]],
     );
-    // The add failed, so this scope gets no marketplace record. The plugin is recorded.
-    assert.deepEqual(await recordedItems("claude", "global"), [{ kind: "mcp-entry", name: PLUGIN_ID }]);
+    assert.deepEqual(await recordedItems("claude", "global"), INSTALLED_RECORD);
   }));
 
-test("when the marketplace add and the install both fail, install gives an error step with both messages, the marketplace add first, and records nothing", () =>
+test("when the marketplace add fails with nothing recorded, install refuses with an error step that gives the add's message, runs no plugin install, and records nothing", () =>
   inTemporaryRoot(async (root) => {
     const cases: [CommandResult, string][] = [
       [{ code: 1, stdout: "", stderr: "  marketplace unreachable\n" }, "marketplace unreachable"],
@@ -252,20 +253,19 @@ test("when the marketplace add and the install both fail, install gives an error
     ];
     for (const [added, addedMessage] of cases) {
       const effects: string[] = [];
-      const failing = fakeRunner(effects, (args) => {
-        if (args[1] === "marketplace") {
-          return added;
-        }
-        return args[1] === "install" ? { code: 1, stdout: "", stderr: "plugin not found in marketplace\n" } : OK;
-      });
+      const failing = fakeRunner(effects, (args) => (args[1] === "marketplace" ? added : OK));
       const steps = await claudeAdapter.install(contextIn(root, { run: failing }), "global");
-      assert.deepEqual(effects, [
-        `run ${addCommand("user")}`,
-        `run claude plugin install ${PLUGIN_ID} --scope user -y`,
-      ]);
+      assert.deepEqual(effects, [`run ${addCommand("user")}`]);
       assert.deepEqual(
         steps.map((step) => [step.agent, step.scope, step.status, step.message]),
-        [["claude", "global", "error", `${addedMessage}\nplugin not found in marketplace`]],
+        [
+          [
+            "claude",
+            "global",
+            "error",
+            `The marketplace ${MARKETPLACE} is already registered, and this tool did not add it, so nothing was changed. The add failed: ${addedMessage}`,
+          ],
+        ],
       );
       assert.deepEqual(await recordedItems("claude", "global"), []);
     }
@@ -309,6 +309,30 @@ test("when the plugin is installed in the project scope but its record cannot be
       );
     } finally {
       restore();
+    }
+  }));
+
+test("a failed marketplace add with no recorded marketplace refuses the install: it runs no plugin install, and the error step says the name is already registered, that this tool did not add it, and that nothing was changed", () =>
+  inTemporaryRoot(async (root) => {
+    for (const [scope, cliScope] of CLI_SCOPES) {
+      const effects: string[] = [];
+      const failingAdd = fakeRunner(effects, (args) =>
+        args[1] === "marketplace" ? { code: 1, stdout: "", stderr: "marketplace already added\n" } : OK,
+      );
+      const steps = await claudeAdapter.install(contextIn(root, { run: failingAdd }), scope);
+      assert.deepEqual(effects, [`run ${addCommand(cliScope)}`], scope);
+      assert.deepEqual(
+        steps.map((step) => [step.scope, step.status, step.message]),
+        [
+          [
+            scope,
+            "error",
+            `The marketplace ${MARKETPLACE} is already registered, and this tool did not add it, so nothing was changed. The add failed: marketplace already added`,
+          ],
+        ],
+        scope,
+      );
+      assert.deepEqual(await recordedItems("claude", scopeKey(scope, projectIn(root))), []);
     }
   }));
 

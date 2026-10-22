@@ -108,7 +108,9 @@ const recordOf = async (ctx: Context, scope: Scope): Promise<{ plugin: boolean; 
 
 // Installs the plugin in one scope. The claude command must be on PATH, which is checked first, before any change. The record
 // is read first too, so a state file that cannot be read stops the install before anything changes. A failed marketplace add
-// does not stop the install, because the marketplace may already be there, so the install decides the outcome. The marketplace
+// stops the install unless this scope's record lists the marketplace, because a marketplace of that name may be registered from
+// another source, and -y would accept what it declares. Checking the listing for its source is OPEN: no listing command is
+// verified. The marketplace
 // is recorded as soon as its add succeeds, because the add changed Claude's own configuration. The plugin is recorded when the
 // install succeeds. If a record cannot be written, the step is an error that gives the command which removes what was changed.
 // Nothing is removed automatically, because the change cannot be checked first.
@@ -117,8 +119,9 @@ const installScope = async (ctx: Context, scope: Scope): Promise<Step> => {
     return step(scope, "error", "claude is not on PATH, so the plugin cannot be installed in this scope.");
   }
   const key = scopeKey(scope, ctx.projectDir);
+  let before: { plugin: boolean; marketplace: boolean };
   try {
-    await recordedItems("claude", key);
+    before = await recordOf(ctx, scope);
   } catch (error) {
     return step(scope, "error", errorText(error));
   }
@@ -129,6 +132,15 @@ const installScope = async (ctx: Context, scope: Scope): Promise<Step> => {
     ["plugin", "marketplace", "add", MARKETPLACE_SOURCE, "--scope", CLI_SCOPE[scope]],
     folder,
   );
+  // A failed add is accepted only when this scope's record lists the marketplace, which this tool added. Otherwise the install is
+  // refused here, before the plugin install runs, and nothing is changed.
+  if (added.code !== 0 && !before.marketplace) {
+    return step(
+      scope,
+      "error",
+      `The marketplace ${MARKETPLACE} is already registered, and this tool did not add it, so nothing was changed. The add failed: ${failureMessage(added)}`,
+    );
+  }
   if (added.code === 0 && !ctx.dryRun) {
     try {
       await record("claude", key, { kind: "marketplace", name: MARKETPLACE });
