@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { SKILL_NAME, installSkill, removeSkill } from "../agents/skill.js";
 import { type Context, makeContext } from "../agents/types.js";
 import { assertIsolated, inTemporaryRoot } from "./isolation.js";
@@ -109,10 +110,65 @@ test("every folder variable of a test points into its temporary root", () =>
     assertIsolated(root);
   }));
 
-test("the rule ID check catches the H-IDs as well as the other ruling letters", () =>
+// The shipped source tree, whose comments the rule check reads.
+const SHIPPED_SOURCE = fileURLToPath(new URL("../../src/", import.meta.url));
+
+// A rule ID in a comment: a letter from the sets used in rule IDs, followed by digits, as a whole word.
+const RULE_ID_IN_COMMENT = /\b[RSTFGKCHNB]\d+\b/;
+
+// A word of the rule vocabulary in a comment, in any case.
+const RULE_WORD_IN_COMMENT = /\b(?:ruling|round|brief|controller)\b/i;
+
+// The .ts files under a folder, at any depth.
+const tsFilesUnder = async (folder: string): Promise<string[]> =>
+  (await readdir(folder, { recursive: true })).filter((name) => name.endsWith(".ts")).map((name) => path.join(folder, name));
+
+// The comments of a TypeScript text, as the TypeScript scanner reads them. Text inside a string or a template is not taken for
+// a comment, because the scanner reads a template's substitutions with the same brace rule the compiler uses.
+const commentsOf = (text: string): string[] => {
+  const scanner = ts.createScanner(ts.ScriptTarget.ES2022, false, ts.LanguageVariant.Standard, text);
+  const comments: string[] = [];
+  // For each open template substitution, the number of open braces when it began.
+  const substitutions: number[] = [];
+  let braces = 0;
+  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
+    if (kind === ts.SyntaxKind.SingleLineCommentTrivia || kind === ts.SyntaxKind.MultiLineCommentTrivia) {
+      comments.push(scanner.getTokenText());
+    } else if (kind === ts.SyntaxKind.TemplateHead) {
+      substitutions.push(braces);
+    } else if (kind === ts.SyntaxKind.OpenBraceToken) {
+      braces += 1;
+    } else if (kind === ts.SyntaxKind.CloseBraceToken) {
+      if (substitutions.length > 0 && substitutions[substitutions.length - 1] === braces) {
+        // This brace ends a substitution, so the template text goes on from here.
+        if (scanner.reScanTemplateToken(false) === ts.SyntaxKind.TemplateTail) {
+          substitutions.pop();
+        }
+      } else {
+        braces -= 1;
+      }
+    }
+  }
+  return comments;
+};
+
+test("no comment in the shipped source holds a rule ID or a word of the rule vocabulary", () =>
   inTemporaryRoot(async (root) => {
     assertIsolated(root);
-    for (const sample of ["H3", "H12", "R9", "S10", "T1", "F17", "G3", "K1", "C2"]) {
-      assert.match(sample, RULE_ID, `${sample} is caught`);
+    const files = [
+      ...(await tsFilesUnder(path.join(SHIPPED_SOURCE, "agents"))),
+      ...(await tsFilesUnder(path.join(SHIPPED_SOURCE, "install"))),
+      path.join(SHIPPED_SOURCE, "paths.ts"),
+      path.join(SHIPPED_SOURCE, "accounts", "lock.ts"),
+    ];
+    assert.ok(files.includes(path.join(SHIPPED_SOURCE, "agents", "skill.ts")), "the check reads the agents folder");
+    const hits: string[] = [];
+    for (const file of files) {
+      for (const comment of commentsOf(await readFile(file, "utf8"))) {
+        if (RULE_ID_IN_COMMENT.test(comment) || RULE_WORD_IN_COMMENT.test(comment)) {
+          hits.push(`${path.relative(SHIPPED_SOURCE, file)}: ${comment.split("\n")[0].trim()}`);
+        }
+      }
     }
+    assert.deepEqual(hits, []);
   }));
