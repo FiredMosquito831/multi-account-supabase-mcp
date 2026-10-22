@@ -365,6 +365,12 @@ const changeCommand = async (action: ChangeAction, args: string[], io: CliIo): P
   if (parsed === undefined) {
     return usageError(io);
   }
+  // An agent name with the shape of a token is refused with the note alone, as add, default and remove refuse one, so the
+  // name is printed nowhere.
+  if (parsed.positional.some((name) => looksLikeToken(name))) {
+    io.stderr(TOKEN_NOTE);
+    return 2;
+  }
   const installFlow = await import("./install/flow.js");
   return installFlow[action](
     {

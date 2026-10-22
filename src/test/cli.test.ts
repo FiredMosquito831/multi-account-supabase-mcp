@@ -872,6 +872,25 @@ test("install with stdin a pipe and stdout a terminal asks nothing, and refuses 
     assert.equal(existsSync(target), false);
   }));
 
+test("install, update and uninstall with a token-shaped agent name exit 2 with the note alone, and run nothing", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const calls: string[] = [];
+    const target = path.join(folder, "never-written.txt");
+    const adapters = [fakeAgent("claude", target, calls)];
+    for (const command of ["install", "update", "uninstall"]) {
+      for (const name of [TOKEN_SHAPED, ` ${TOKEN_SHAPED}`]) {
+        const result = await session.run([command, name], { adapters });
+        assert.equal(result.code, 2, command);
+        assert.deepEqual(result.err, [TOKEN_NOTE], command);
+        assert.deepEqual(result.out, [], command);
+        assert.equal(printed(result).includes(TOKEN_SHAPED), false, command);
+      }
+    }
+    assert.deepEqual(calls, []);
+    assert.equal(existsSync(target), false);
+  }));
+
 test("install --dry-run prints the plan, exits 0, and writes no file", () =>
   inTempFolder(async (folder) => {
     const target = path.join(folder, "would-write.txt");
