@@ -1126,6 +1126,51 @@ test("uninstall that cannot look up a recorded backup reports the stop in one st
     await unrecordedEntryStays(root, "global");
   }));
 
+test("install and update refuse a missing project folder, in a real run and a dry run, and create nothing", () =>
+  inTemporaryRoot(async (root) => {
+    const project = projectIn(root);
+    const key = scopeKey("project", project);
+    const message = `The project folder ${project} does not exist, so nothing was created or changed.`;
+    for (const dryRun of [false, true]) {
+      const effects: string[] = [];
+      const steps = await opencodeAdapter.install(contextIn(root, { dryRun, fs: recordingFiles(effects) }), "project");
+      assert.deepEqual(
+        steps.map((step) => [step.status, step.message]),
+        [["error", message]],
+      );
+      assert.deepEqual(effects, []);
+      assert.equal(existsSync(project), false);
+      assert.equal(existsSync(statePath("opencode")), false);
+    }
+    // A recorded entry whose project folder has since gone: update refuses too, and the record does not change.
+    await mkdir(project, { recursive: true });
+    assert.equal((await opencodeAdapter.install(contextIn(root), "project"))[0].status, "ok");
+    const recorded = await recordedItems("opencode", key);
+    await rm(project, { recursive: true, force: true });
+    for (const dryRun of [false, true]) {
+      const effects: string[] = [];
+      const steps = await opencodeAdapter.update(contextIn(root, { dryRun, fs: recordingFiles(effects) }), "project");
+      assert.deepEqual(
+        steps.map((step) => [step.status, step.message]),
+        [["error", message]],
+      );
+      assert.deepEqual(effects, []);
+      assert.equal(existsSync(project), false);
+      assert.deepEqual(await recordedItems("opencode", key), recorded);
+    }
+  }));
+
+test("uninstall never removes the project folder, even when a record lists it", () =>
+  inTemporaryRoot(async (root) => {
+    const project = projectIn(root);
+    await mkdir(project, { recursive: true });
+    await record("opencode", scopeKey("project", project), { kind: "directory", path: project });
+    const steps = await opencodeAdapter.uninstall(contextIn(root), "project");
+    assert.equal(steps[0].status, "skipped");
+    assert.equal(existsSync(project), true);
+    await unrecordedEntryStays(root, "project");
+  }));
+
 test("install writes a backup after it is recorded, and writes the file after the backup", () =>
   inTemporaryRoot(async (root) => {
     const file = projectFileIn(root);

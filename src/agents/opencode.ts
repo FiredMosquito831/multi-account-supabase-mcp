@@ -26,7 +26,8 @@ import { type AgentAdapter, type Context, type Step, UnsupportedScope } from "./
 // indentation, the escapes, the line endings and the order of integer-like keys can change, and the backup keeps the old
 // bytes. A backup takes the first free name, so an earlier backup is never replaced. Each backup is on the record, and
 // uninstall keeps every backup that is still on disk and names it, unless it stops before it reads the backups. The folders
-// this tool makes are recorded too, and uninstall removes them, deepest first, only when they are empty.
+// this tool makes are recorded too, and uninstall removes them, deepest first, only when they are empty. The project folder
+// belongs to the owner: install and update refuse it when it does not exist, and uninstall never removes it.
 
 type ActiveScope = "global" | "project";
 
@@ -183,13 +184,16 @@ const recordedPath = (items: readonly Item[], folder: string): string[] =>
 // Removes the folders the record lists on the chain, deepest first, when they are empty. The result names the folders that
 // were removed. In a dry run it names the folders that would be removed if they are empty.
 const removeFolders = async (ctx: Context, items: readonly Item[], chain: readonly string[]): Promise<string[]> => {
+  // The project folder belongs to the owner. It is never removed, even when a record lists it.
+  const projectFolder = path.resolve(ctx.projectDir);
+  const candidates = chain.filter((folder) => path.resolve(folder) !== projectFolder);
   const listed: string[] = [];
-  for (const folder of chain) {
+  for (const folder of candidates) {
     if (items.some((item) => item.kind === "directory" && item.path === folder) && (await isFolder(folder))) {
       listed.push(folder);
     }
   }
-  await removeRecordedFolders(ctx, items, chain);
+  await removeRecordedFolders(ctx, items, candidates);
   if (ctx.dryRun) {
     return listed;
   }
@@ -250,6 +254,25 @@ const absent = (file: string, dryRun: boolean): string =>
   `The server entry is not in ${file}, so no server entry ${pick(dryRun, "would be removed", "was removed")}.`;
 
 const notFolder = (target: string): string => `${target} is not a folder, so nothing was changed.`;
+
+// The project folder belongs to the owner. An install or an update never creates it, so a missing one is refused.
+const projectMissing = (folder: string): string =>
+  `The project folder ${folder} does not exist, so nothing was created or changed.`;
+
+// Whether a path exists. A path under a regular file counts as missing, which is how the system reports it. Any other error is
+// thrown.
+const pathExists = async (target: string): Promise<boolean> => {
+  try {
+    await stat(target);
+    return true;
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return false;
+    }
+    throw error;
+  }
+};
 
 // Whether a link leads to a folder. A dangling link does not, and neither does a link to a file.
 const linkResolvesToFolder = async (link: string): Promise<boolean> => {
@@ -465,6 +488,10 @@ const sameApartFromEntry = (before: Doc, after: Doc): boolean =>
 const installIn = async (ctx: Context, scope: ActiveScope): Promise<Step> => {
   const target = await targetOf(ctx, scope);
   const { folder, file, key } = target;
+  // The project folder is refused before any change, in a real run and in a dry run, when it does not exist.
+  if (scope === "project" && !(await pathExists(folder))) {
+    return step(scope, "error", projectMissing(folder));
+  }
   // A file on the way to the folder would fail when the folder is made, after the records are written. So it is refused
   // here, before any change.
   const blocked = await blockingPath(folder);
