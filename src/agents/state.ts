@@ -11,14 +11,17 @@ export type AgentId = "claude" | "codex" | "opencode" | "antigravity";
 // One thing the installer wrote. Uninstall removes what each kind lists, with three limits. A marketplace is never removed: the
 // Claude adapter only reports it, and drops it from the record with its scope. A folder is removed only when it is empty. A
 // backup is a file item too, and the opencode adapter keeps each backup that is on disk and names it. Each kind names exactly
-// what the item covers.
+// what the item covers. A server item names the command line program that the install pointed the entry at, so doctor can
+// check that the program still exists. Uninstall forgets the whole scope, so a server item goes with the scope's other
+// items. A scope holds at most one server item.
 export type Item =
   | { kind: "mcp-entry"; name: string }
   | { kind: "marketplace"; name: string }
   | { kind: "toml-table"; path: string; table: string }
   | { kind: "json-entry"; path: string; pointer: string }
   | { kind: "directory"; path: string }
-  | { kind: "file"; path: string; createdByUs: true };
+  | { kind: "file"; path: string; createdByUs: true }
+  | { kind: "server"; cliPath: string };
 
 // The only version this code reads and writes. A file with another version is refused.
 const VERSION = 1;
@@ -180,6 +183,9 @@ const toItem = (value: unknown): Item => {
         throw new Error("A recorded file must be marked as created by this tool.");
       }
       return { kind: "file", path: absolutePath(fields.path), createdByUs: true };
+    case "server":
+      expectKeys(fields, ["kind", "cliPath"]);
+      return { kind: "server", cliPath: absolutePath(fields.cliPath) };
     default:
       throw new Error("A recorded item has an unknown kind.");
   }
@@ -220,6 +226,12 @@ const checkState = (data: unknown): Map<string, Item[]> => {
       }
     }
     result.set(key, listed);
+  }
+  // Two server items in one scope would leave doctor no single path to check, so such a file is refused.
+  for (const items of result.values()) {
+    if (items.filter((item) => item.kind === "server").length > 1) {
+      throw new Error("A scope holds at most one server item.");
+    }
   }
   return result;
 };
@@ -274,7 +286,8 @@ const reportLockProblem = (text: string): void => {
 
 // Keeps an item in a scope. The change runs under the state file's own lock, `<state file>.lock`, which withRegistryLock
 // takes. The accounts file has its own lock, and the two share no data. Inside the lock the state is read again, so two calls
-// at the same time both survive. An item that is already listed is not listed again, and then nothing is written.
+// at the same time both survive. An item that is already listed is not listed again, and then nothing is written. A server
+// item replaces the server item that the scope holds, if there is one, so the scope keeps one path.
 export const record = async (agent: AgentId, key: string, item: Item, dataDir?: string): Promise<void> => {
   const entry = toItem(item);
   assertScopeKey(key);
@@ -283,10 +296,11 @@ export const record = async (agent: AgentId, key: string, item: Item, dataDir?: 
     file,
     async () => {
       const scopes = (await loadState(file)) ?? new Map<string, Item[]>();
-      const items = scopes.get(key) ?? [];
-      if (items.some((existing) => sameItem(existing, entry))) {
+      const current = scopes.get(key) ?? [];
+      if (current.some((existing) => sameItem(existing, entry))) {
         return;
       }
+      const items = entry.kind === "server" ? current.filter((existing) => existing.kind !== "server") : [...current];
       items.push(entry);
       scopes.set(key, items);
       await writeState(file, scopes);
@@ -301,6 +315,15 @@ export const recordedItems = async (agent: AgentId, key: string, dataDir?: strin
   assertScopeKey(key);
   const scopes = await loadState(statePath(agent, dataDir));
   return [...(scopes?.get(key) ?? [])];
+};
+
+// The keys of the scopes that hold at least one item, in the order the state file lists them. The keys are the ones that
+// scopeKey writes. A read takes no lock, as recordedItems does.
+export const recordedScopeKeys = async (agent: AgentId, dataDir?: string): Promise<string[]> => {
+  const scopes = await loadState(statePath(agent, dataDir));
+  return [...(scopes ?? new Map<string, Item[]>()).entries()]
+    .filter(([, items]) => items.length > 0)
+    .map(([key]) => key);
 };
 
 // Removes one scope and leaves the other scopes as they are. A scope that is not recorded changes nothing. The state file

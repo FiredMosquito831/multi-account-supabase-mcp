@@ -10,6 +10,7 @@ import {
   readIfExists,
   record,
   recordedItems,
+  recordedScopeKeys,
   scopeKey,
   statePath,
 } from "../agents/state.js";
@@ -22,6 +23,8 @@ const entry: Item = { kind: "mcp-entry", name: "supabase" };
 
 // An absolute path, for a valid record that needs a path but never reads the file it names.
 const ABSOLUTE = path.resolve(os.tmpdir(), "state-test-item");
+// A second absolute path, for a server item that replaces the first one.
+const OTHER_ABSOLUTE = path.resolve(os.tmpdir(), "state-test-other-item");
 
 // The message for a scope key that is not the form scopeKey writes for its folder.
 const SCOPE_KEY_MESSAGE =
@@ -169,6 +172,51 @@ test("a marketplace item is recorded and read back under its scope, and a market
     await assert.rejects(record("claude", "global", { kind: "marketplace", name: "" }, dataDir), {
       message: "A recorded field must be a non-empty string.",
     });
+  }));
+
+test("a server item with an absolute command line path is recorded and read back under its scope", () =>
+  inDataFolder(async (dataDir) => {
+    const server: Item = { kind: "server", cliPath: ABSOLUTE };
+    await record("claude", "global", server, dataDir);
+    assert.deepEqual(await recordedItems("claude", "global", dataDir), [server]);
+  }));
+
+test("a server item with a relative command line path is refused, and writes nothing", () =>
+  inDataFolder(async (dataDir) => {
+    await assert.rejects(record("claude", "global", { kind: "server", cliPath: "relative/cli.js" }, dataDir), {
+      message: "A recorded path must be absolute.",
+    });
+    await assert.rejects(stat(statePath("claude", dataDir)), { code: "ENOENT" });
+  }));
+
+test("a server item with a field besides its path is refused, and writes nothing", () =>
+  inDataFolder(async (dataDir) => {
+    const withExtra = { kind: "server", cliPath: ABSOLUTE, extra: 1 } as unknown as Item;
+    await assert.rejects(record("claude", "global", withExtra, dataDir), {
+      message: "A recorded item has a field that its kind does not allow, or lacks one.",
+    });
+    await assert.rejects(stat(statePath("claude", dataDir)), { code: "ENOENT" });
+  }));
+
+test("a scope holds one server item: recording another replaces it, and recording the same one again leaves one", () =>
+  inDataFolder(async (dataDir) => {
+    const first: Item = { kind: "server", cliPath: ABSOLUTE };
+    const second: Item = { kind: "server", cliPath: OTHER_ABSOLUTE };
+    await record("claude", "global", entry, dataDir);
+    await record("claude", "global", first, dataDir);
+    await record("claude", "global", second, dataDir);
+    assert.deepEqual(await recordedItems("claude", "global", dataDir), [entry, second]);
+    await record("claude", "global", second, dataDir);
+    assert.deepEqual(await recordedItems("claude", "global", dataDir), [entry, second]);
+  }));
+
+test("recordedScopeKeys lists the scopes that hold an item, and none before anything is recorded", () =>
+  inDataFolder(async (dataDir) => {
+    const projectKey = scopeKey("project", path.join(dataDir, "project"));
+    assert.deepEqual(await recordedScopeKeys("claude", dataDir), []);
+    await record("claude", "global", entry, dataDir);
+    await record("claude", projectKey, entry, dataDir);
+    assert.deepEqual(await recordedScopeKeys("claude", dataDir), ["global", projectKey]);
   }));
 
 test("one folder has one key: on Windows another letter case of the folder is refused, and elsewhere it is another folder", () =>
@@ -341,6 +389,21 @@ const wrongShapes: [string, unknown][] = [
   ],
   ["a marketplace item with an empty name", { version: 1, scopes: { global: [{ kind: "marketplace", name: "" }] } }],
   ["a scope key that is neither global nor a project folder", { version: 1, scopes: { "project:relative": [] } }],
+  [
+    "a server item with a relative path",
+    { version: 1, scopes: { global: [{ kind: "server", cliPath: "relative/cli.js" }] } },
+  ],
+  [
+    "a server item with a field besides its path",
+    { version: 1, scopes: { global: [{ kind: "server", cliPath: ABSOLUTE, extra: 1 }] } },
+  ],
+  [
+    "a scope that holds two server items",
+    {
+      version: 1,
+      scopes: { global: [{ kind: "server", cliPath: ABSOLUTE }, { kind: "server", cliPath: OTHER_ABSOLUTE }] },
+    },
+  ],
 ];
 
 for (const [label, value] of wrongShapes) {
