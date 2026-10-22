@@ -1,10 +1,10 @@
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { CommandResult, Runner } from "../agents/command.js";
+import type { CommandOptions, CommandResult, Runner } from "../agents/command.js";
 import { runPlan } from "../agents/plan.js";
 import type { Scope } from "../agents/scopes.js";
 import type { AgentId } from "../agents/state.js";
@@ -13,7 +13,7 @@ import {
   type Context,
   type FileOps,
   type Step,
-  UnsupportedScope,
+  PlanRefused,
   makeContext,
 } from "../agents/types.js";
 
@@ -23,6 +23,49 @@ const PACKAGE = path.resolve("fake-package");
 const CLI = path.join(PACKAGE, "dist", "cli.js");
 const CONFIG = path.join(PROJECT, ".mcp.json");
 const OLD = path.join(PROJECT, "old.json");
+
+// Each name here points at the owner's files, agent configurations or data folder when no test changes it. While this
+// file's tests run, each one is set to a folder under a temporary folder, and the values are put back afterwards.
+const SANDBOX_NAMES = [
+  "HOME",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "CODEX_HOME",
+  "XDG_CONFIG_HOME",
+  "MULTI_ACCOUNT_SUPABASE_HOME",
+] as const;
+const saved = new Map<string, string | undefined>();
+let sandbox = "";
+
+before(() => {
+  sandbox = mkdtempSync(path.join(os.tmpdir(), "plan-test-home-"));
+  const values: Record<(typeof SANDBOX_NAMES)[number], string> = {
+    HOME: sandbox,
+    USERPROFILE: sandbox,
+    APPDATA: path.join(sandbox, "AppData", "Roaming"),
+    LOCALAPPDATA: path.join(sandbox, "AppData", "Local"),
+    CODEX_HOME: path.join(sandbox, "codex"),
+    XDG_CONFIG_HOME: path.join(sandbox, "config"),
+    MULTI_ACCOUNT_SUPABASE_HOME: path.join(sandbox, "data"),
+  };
+  for (const name of SANDBOX_NAMES) {
+    saved.set(name, process.env[name]);
+    process.env[name] = values[name];
+  }
+});
+
+after(() => {
+  for (const name of SANDBOX_NAMES) {
+    const value = saved.get(name);
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
+  rmSync(sandbox, { recursive: true, force: true });
+});
 
 // A fake runner. It logs each command line it is given, and succeeds with no output.
 const fakeRunner =
@@ -62,8 +105,8 @@ const contextFor = (dryRun: boolean, effects: string[], contents = new Map<strin
     fs: fakeFiles(effects, contents),
   });
 
-// A fake adapter. Each method logs the agent, the method and the scope. It then runs the action with the context, and
-// returns one ok step. Doctor has no scope of its own, so its step names the global scope.
+// A fake adapter. Each method except doctor logs the agent, the method and the scope, and doctor logs the agent alone.
+// Each method runs the action with the context, and returns one ok step. Doctor's step names the global scope.
 const fakeAdapter = (
   id: AgentId,
   scopes: readonly Scope[],
@@ -92,7 +135,7 @@ const fakeAdapter = (
   };
 };
 
-test("a named agent without the scope throws UnsupportedScope", async () => {
+test("a named agent without the scope is refused as PlanRefused, of kind unsupported-scope", async () => {
   const calls: string[] = [];
   const antigravity = fakeAdapter("antigravity", ["global"], calls);
   await assert.rejects(
@@ -103,7 +146,10 @@ test("a named agent without the scope throws UnsupportedScope", async () => {
       scope: "project",
       ctx: contextFor(true, []),
     }),
-    (error: unknown) => error instanceof UnsupportedScope && error.message === "antigravity has no project scope",
+    (error: unknown) =>
+      error instanceof PlanRefused &&
+      error.kind === "unsupported-scope" &&
+      error.message === "antigravity has no project scope",
   );
   assert.deepEqual(calls, []);
 });
@@ -170,7 +216,7 @@ test("a named agent without the scope stops the command before any agent is call
       scope: "project",
       ctx: contextFor(false, effects),
     }),
-    (error: unknown) => error instanceof UnsupportedScope,
+    (error: unknown) => error instanceof PlanRefused && error.kind === "unsupported-scope",
   );
   assert.deepEqual(calls, []);
   assert.deepEqual(effects, []);
@@ -251,6 +297,7 @@ test("a dry run command succeeds with no output, and quotes an argument that has
     code: 0,
     stdout: "",
     stderr: "",
+    dryRun: true,
   });
   assert.deepEqual(ctx.shown, ['node "C:\\Program Files\\nodejs\\cli.js" serve']);
   assert.deepEqual(effects, []);
@@ -276,10 +323,10 @@ test("a dry run records a mkdir and creates no folder", async () => {
   }
 });
 
-test("a real run creates the folder and any folder above it, in a temporary folder", async () => {
+test("a real run creates one folder whose parent exists, in a temporary folder", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "plan-test-"));
   try {
-    const folder = path.join(root, "state", "folder");
+    const folder = path.join(root, "folder");
     const ctx = makeContext({
       projectDir: PROJECT,
       cliPath: CLI,
@@ -317,7 +364,7 @@ test("a dry run of removeDirIfEmpty lists the removal, and removes no folder", a
   }
 });
 
-test("a real run of removeDirIfEmpty removes an empty folder, keeps a folder that holds a file, and ignores a folder that is not there", async () => {
+test("removeDirIfEmpty removes an empty folder, keeps one with a file, and ignores a missing one", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "plan-test-"));
   try {
     const empty = path.join(root, "empty");
@@ -364,4 +411,217 @@ test("removeDirIfEmpty throws any other error, and a path with a NUL byte gives 
     const code = (error as NodeJS.ErrnoException).code;
     return code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "ENOENT";
   });
+});
+
+test("a real run fails for a folder whose parent is missing, and creates nothing", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "plan-test-"));
+  try {
+    const folder = path.join(root, "missing", "folder");
+    const ctx = makeContext({
+      projectDir: PROJECT,
+      cliPath: CLI,
+      packageRoot: PACKAGE,
+      dryRun: false,
+      present: () => true,
+      run: fakeRunner([]),
+    });
+    await assert.rejects(ctx.ensureDir(folder), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
+    assert.equal(existsSync(path.join(root, "missing")), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a folder that exists already is left as it is, and a file at the path is refused", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "plan-test-"));
+  try {
+    const folder = path.join(root, "folder");
+    const file = path.join(root, "file");
+    mkdirSync(folder);
+    writeFileSync(file, "kept");
+    const ctx = makeContext({
+      projectDir: PROJECT,
+      cliPath: CLI,
+      packageRoot: PACKAGE,
+      dryRun: false,
+      present: () => true,
+      run: fakeRunner([]),
+    });
+    await ctx.ensureDir(folder);
+    assert.equal((await stat(folder)).isDirectory(), true);
+    await assert.rejects(ctx.ensureDir(file), (error: unknown) => error instanceof Error);
+    assert.equal(await readFile(file, "utf8"), "kept");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a folder given to run() reaches the runner, and is listed before the command line", async () => {
+  const seen: (CommandOptions | undefined)[] = [];
+  const runner: Runner = async (_command, _args, options) => {
+    seen.push(options);
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const ctx = makeContext({
+    projectDir: PROJECT,
+    cliPath: CLI,
+    packageRoot: PACKAGE,
+    dryRun: false,
+    present: () => true,
+    run: runner,
+    fs: fakeFiles([], new Map()),
+  });
+  await ctx.run("claude", ["plugin", "list"], { cwd: PROJECT });
+  assert.deepEqual(seen, [{ cwd: PROJECT }]);
+  assert.deepEqual(ctx.shown, [`cwd ${PROJECT}`, "claude plugin list"]);
+});
+
+test("the context gives back the environment it was given", () => {
+  const env: NodeJS.ProcessEnv = { HOME: PROJECT };
+  const ctx = makeContext({
+    projectDir: PROJECT,
+    cliPath: CLI,
+    packageRoot: PACKAGE,
+    dryRun: true,
+    env,
+    present: () => true,
+    run: fakeRunner([]),
+    fs: fakeFiles([], new Map()),
+  });
+  assert.equal(ctx.env, env);
+});
+
+test("the context reads the process environment when no environment is given", () => {
+  assert.equal(contextFor(true, []).env, process.env);
+});
+
+test("an agent name that matches no agent gives an error step, and the known agents still run", async () => {
+  const calls: string[] = [];
+  const result = await runPlan({
+    adapters: [fakeAdapter("claude", ["global"], calls), fakeAdapter("codex", ["global"], calls)],
+    action: "install",
+    agents: ["claude", "codx"],
+    ctx: contextFor(true, []),
+  });
+  assert.deepEqual(result.steps, [
+    { agent: "claude", scope: "global", status: "ok", message: "install done" },
+    { agent: "codx", scope: "global", status: "error", message: "unknown agent; the agents are claude, codex" },
+  ]);
+  assert.deepEqual(calls, ["claude install global"]);
+});
+
+test("an empty list of agents gives one error step that says what to do", async () => {
+  const calls: string[] = [];
+  const result = await runPlan({
+    adapters: [fakeAdapter("claude", ["global"], calls)],
+    action: "install",
+    agents: [],
+    ctx: contextFor(true, []),
+  });
+  assert.deepEqual(result.steps, [
+    { agent: "", scope: "global", status: "error", message: "name at least one agent, or leave the list out for all" },
+  ]);
+  assert.deepEqual(calls, []);
+});
+
+test("an unknown scope refuses the whole plan, with an error that names it", async () => {
+  const calls: string[] = [];
+  await assert.rejects(
+    runPlan({
+      adapters: [fakeAdapter("claude", ["global"], calls)],
+      action: "install",
+      scope: "workspace",
+      ctx: contextFor(true, []),
+    }),
+    (error: unknown) =>
+      error instanceof PlanRefused &&
+      error.kind === "unknown-scope" &&
+      error.message === "unknown scope workspace; the scopes are global, project and local",
+  );
+  assert.deepEqual(calls, []);
+});
+
+test("a name that does not look like a plain word is not repeated in an error", async () => {
+  const notAWord = "1234_not_a_word";
+  const calls: string[] = [];
+  await assert.rejects(
+    runPlan({
+      adapters: [fakeAdapter("claude", ["global"], calls)],
+      action: "install",
+      scope: notAWord,
+      ctx: contextFor(true, []),
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message === "unknown scope <not shown>; the scopes are global, project and local",
+  );
+  const result = await runPlan({
+    adapters: [fakeAdapter("claude", ["global"], calls)],
+    action: "install",
+    agents: [notAWord],
+    ctx: contextFor(true, []),
+  });
+  assert.deepEqual(result.steps, [
+    { agent: "<not shown>", scope: "global", status: "error", message: "unknown agent; the agents are claude" },
+  ]);
+  assert.deepEqual(calls, []);
+});
+
+test("install is refused before any agent is called when the command line program path is not absolute", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext({
+    projectDir: PROJECT,
+    cliPath: path.join("relative", "cli.js"),
+    packageRoot: PACKAGE,
+    dryRun: true,
+    present: () => true,
+    run: fakeRunner([]),
+    fs: fakeFiles([], new Map()),
+  });
+  await assert.rejects(
+    runPlan({ adapters: [fakeAdapter("claude", ["global"], calls)], action: "install", ctx }),
+    (error: unknown) =>
+      error instanceof PlanRefused &&
+      error.kind === "relative-path" &&
+      error.message === "The command line program path must be absolute, so nothing was changed.",
+  );
+  assert.deepEqual(calls, []);
+});
+
+test("a second run with the same context does not change the result of the first", async () => {
+  const ctx = contextFor(true, []);
+  const first = await runPlan({
+    adapters: [
+      fakeAdapter("claude", ["global"], [], async (agentCtx) => {
+        await agentCtx.run("claude", ["plugin", "list"]);
+      }),
+    ],
+    action: "install",
+    agents: ["claude"],
+    ctx,
+  });
+  await runPlan({
+    adapters: [
+      fakeAdapter("claude", ["global"], [], async (agentCtx) => {
+        await agentCtx.run("claude", ["plugin", "update"]);
+      }),
+    ],
+    action: "update",
+    agents: ["claude"],
+    ctx,
+  });
+  assert.deepEqual(first.shown, ["claude plugin list"]);
+});
+
+test("a command result from a dry run is marked dryRun, and a real result is not", async () => {
+  const dry = await contextFor(true, []).run("codex", ["mcp", "list"]);
+  assert.equal(dry.dryRun, true);
+  const real = await contextFor(false, []).run("codex", ["mcp", "list"]);
+  assert.equal(real.dryRun, undefined);
+});
+
+test("the tests run with the home, configuration and data folders in a temporary folder", () => {
+  for (const name of SANDBOX_NAMES) {
+    assert.ok(process.env[name]?.startsWith(os.tmpdir()), `${name} is not in a temporary folder`);
+  }
 });

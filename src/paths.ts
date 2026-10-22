@@ -16,3 +16,10 @@ export const dataFolder = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform, ho
   const dataHome = env.XDG_DATA_HOME || path.posix.join(homeDir, ".local", "share");
   return path.posix.join(dataHome, APP_FOLDER);
 };
+
+// Whether a path names a place without depending on the working folder. On Windows the path needs a drive letter,
+// or be a network share, written with either kind of slash, such as \\server\share or //server/share. A path that
+// starts with one separator depends on the current drive, so it is not absolute. Elsewhere a leading slash is enough.
+// The platform is a parameter for tests.
+export const isAbsoluteLocation = (p: string, platform: NodeJS.Platform = process.platform): boolean =>
+  platform === "win32" ? /^(?:[A-Za-z]:[\\/]|(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+)/.test(p) : p.startsWith("/");
