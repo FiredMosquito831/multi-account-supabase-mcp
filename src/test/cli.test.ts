@@ -1,15 +1,29 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough, Writable } from "node:stream";
+import type { Runner } from "../agents/command.js";
+import type { Scope } from "../agents/scopes.js";
+import type { AgentId } from "../agents/state.js";
+import type { AgentAdapter, Context, Step } from "../agents/types.js";
 import { releaseHooks } from "../accounts/lock.js";
 import { type AccountRecord, Registry } from "../accounts/registry.js";
-import { type CliIo, runCli } from "../run.js";
+import {
+  type CliIo,
+  type FlowEnvironment,
+  INTERRUPT_NOTICE,
+  isChangeCommand,
+  runCli,
+  terminalAsk,
+  watchInterrupt,
+} from "../run.js";
 import type { TokenStore } from "../secrets/token-store.js";
 import type { Profile } from "../supabase/api.js";
 import { usageText } from "../usage.js";
+import { inTemporaryRoot } from "./isolation.js";
 
 // Fake values only. TYPED is what the owner types at the prompt. It must never reach any output.
 const TYPED = "tok-SECRET-123";
@@ -20,16 +34,10 @@ const TOKEN_STILL_WORKS = "The Supabase token still works until you revoke it in
 const ADDED_AT = "2026-10-20T09:00:00.000Z";
 const WORK_PROFILE: Profile = { gotrueId: "gotrue-work", email: "a@example.com", username: "fake-user" };
 
-// Each test gets its own folder under the system temp folder, and removes it afterwards. No test reads the
-// owner's data folder, reaches the network or the credential store, or imports the keyring module.
-const inTempFolder = async (run: (folder: string) => Promise<void>): Promise<void> => {
-  const folder = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
-  try {
-    await run(folder);
-  } finally {
-    await rm(folder, { recursive: true, force: true });
-  }
-};
+// Each test gets its own folder in a temporary root, and every home, configuration and data name points into that root.
+// The root is removed afterwards. No test reads the owner's data folder, reaches the network or the credential store, or
+// imports the keyring module.
+const inTempFolder = (run: (folder: string) => Promise<void>): Promise<void> => inTemporaryRoot(run);
 
 // An in-memory token store. It implements the interface only, so the test never loads token-store.ts at run time.
 class FakeTokens implements TokenStore {
@@ -61,6 +69,9 @@ type Options = {
   typed?: string;
   profile?: (token: string) => Promise<Profile>;
   serve?: () => Promise<void>;
+  adapters?: readonly AgentAdapter[];
+  stdoutTerminal?: boolean;
+  asked?: string[];
 };
 
 type Result = {
@@ -71,6 +82,52 @@ type Result = {
   profileCalls: number;
   serveCalls: number;
 };
+
+// The command runner of the install commands. It throws, so a command that reached it would make its step an error row. A dry
+// run never reaches it, and no test here runs a real pass.
+const noCommands: Runner = async () => {
+  throw new Error("no command runs in this test");
+};
+
+// A fake adapter. Each call is logged, and its install writes the target file, which a dry pass must not do.
+const fakeAgent = (id: AgentId, target: string, calls: string[]): AgentAdapter => {
+  const change =
+    (action: "install" | "update" | "uninstall") =>
+    async (ctx: Context, scope: Scope): Promise<Step[]> => {
+      calls.push(`${action} ${id} ${scope} ${ctx.dryRun ? "dry" : "real"}`);
+      await ctx.writeFile(target, "fake\n");
+      return [{ agent: id, scope, status: "ok", message: ctx.dryRun ? `Would ${action} ${id}.` : `Did ${action} ${id}.` }];
+    };
+  return {
+    id,
+    scopes: ["global"],
+    present: () => true,
+    install: change("install"),
+    update: change("update"),
+    uninstall: change("uninstall"),
+    doctor: async () => {
+      calls.push(`doctor ${id}`);
+      return [];
+    },
+  };
+};
+
+// The inputs of the install commands in these tests. The adapters are fakes, the runner refuses every command, and every
+// question is answered with a blank line and recorded, so no test runs an agent CLI or reads a real configuration.
+const flowEnvironment = (folder: string, adapters: readonly AgentAdapter[], asked: string[]): FlowEnvironment => ({
+  ask: async (question) => {
+    asked.push(question);
+    return "";
+  },
+  cliPath: path.join(folder, "package", "dist", "cli.js"),
+  packageRoot: path.join(folder, "package"),
+  projectDir: path.join(folder, "project"),
+  homeDir: path.join(folder, "home"),
+  env: process.env,
+  adapters,
+  run: noCommands,
+  present: () => true,
+});
 
 // One session is one registry file and one token store. Every command run through it shares both.
 const sessionIn = (folder: string) => {
@@ -88,7 +145,7 @@ const sessionIn = (folder: string) => {
         err.push(text);
       },
       stdinIsTerminal: options.terminal ?? true,
-      stdoutIsTerminal: false,
+      stdoutIsTerminal: options.stdoutTerminal ?? false,
       readSecret: async () => {
         counts.prompts += 1;
         return options.typed ?? TYPED;
@@ -100,6 +157,7 @@ const sessionIn = (folder: string) => {
         return options.profile ? options.profile(token) : WORK_PROFILE;
       },
       addedAt: () => ADDED_AT,
+      flow: flowEnvironment(folder, options.adapters ?? [], options.asked ?? []),
       serve: async () => {
         counts.serveCalls += 1;
         if (options.serve) {
@@ -625,4 +683,252 @@ test("default, remove and add each print a lock file that could not be removed o
     } finally {
       releaseHooks.unlink = realUnlink;
     }
+  }));
+
+test("install, update and uninstall refuse an unknown flag, a missing value, a repeated option and --yes where it is not used, with exit 2, and call no agent", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const calls: string[] = [];
+    const target = path.join(folder, "never-written.txt");
+    const adapters = [fakeAgent("claude", target, calls)];
+    const cases = [
+      ["install", "--bogus"],
+      ["install", "--scope"],
+      ["install", "--scope", "--dry-run"],
+      ["install", "--scope", "project", "--scope", "local"],
+      ["update", "--scope"],
+      ["update", "--yes"],
+      ["update", "--bogus"],
+      ["uninstall", "--yes"],
+      ["uninstall", "--scope", "--yes"],
+    ];
+    for (const argv of cases) {
+      const result = await session.run(argv, { adapters });
+      assert.equal(result.code, 2, argv.join(" "));
+      assert.deepEqual(result.err, ["Usage error.", usageText], argv.join(" "));
+      assert.deepEqual(result.out, [], argv.join(" "));
+    }
+    assert.deepEqual(calls, []);
+    assert.equal(existsSync(target), false);
+  }));
+
+test("doctor takes no argument and no flag: each one exits 2 with the usage error, and calls no agent", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const calls: string[] = [];
+    const adapters = [fakeAgent("claude", path.join(folder, "never-written.txt"), calls)];
+    for (const argv of [["doctor", "claude"], ["doctor", "--dry-run"], ["doctor", "--yes"]]) {
+      const result = await session.run(argv, { adapters });
+      assert.equal(result.code, 2, argv.join(" "));
+      assert.deepEqual(result.err, ["Usage error.", usageText], argv.join(" "));
+      assert.deepEqual(result.out, [], argv.join(" "));
+    }
+    assert.deepEqual(calls, []);
+  }));
+
+test("install asks its questions only when stdin and stdout are both terminals", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const calls: string[] = [];
+    const adapters = [fakeAgent("claude", path.join(folder, "never-written.txt"), calls)];
+    // Stdin is a terminal and stdout is a pipe: no question is asked, and install refuses without --yes.
+    const piped: string[] = [];
+    const refused = await session.run(["install"], { adapters, asked: piped });
+    assert.equal(refused.code, 2);
+    assert.deepEqual(piped, []);
+    assert.equal(refused.out.includes("install needs --yes when there is no terminal, so nothing was changed."), true);
+    // Both streams are terminals: the agent, scope and apply questions are asked, and blank answers change nothing.
+    const asked: string[] = [];
+    const answered = await session.run(["install"], { adapters, stdoutTerminal: true, asked });
+    assert.equal(answered.code, 0);
+    assert.equal(asked.length, 3);
+    assert.equal(asked[0]?.startsWith("Which agents?"), true);
+    assert.equal(asked[2], "Apply these changes? [y/N] ");
+    assert.equal(calls.some((call) => call.endsWith(" real")), false);
+  }));
+
+// Rejects after ms, so a question that never gets an answer fails the test instead of waiting for ever.
+const within = <T>(promise: Promise<T>, ms: number): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+};
+
+// A writable that keeps nothing, for the prompts of the terminal questions.
+const discard = (): Writable =>
+  new Writable({
+    write: (_chunk, _encoding, done) => {
+      done();
+    },
+  });
+
+test("two answers that arrive in one chunk each answer one question, in order", () =>
+  inTempFolder(async () => {
+    const input = new PassThrough();
+    const ask = terminalAsk(input, discard());
+    input.write("claude\nproject\n");
+    assert.equal(await within(ask("Which agents? "), 2000), "claude");
+    assert.equal(await within(ask("Which scope? "), 2000), "project");
+  }));
+
+test("a question whose input closes fails with its message, and does not wait", () =>
+  inTempFolder(async () => {
+    const input = new PassThrough();
+    const ask = terminalAsk(input, discard());
+    const pending = ask("Which agents? ");
+    input.end();
+    await assert.rejects(within(pending, 2000), { message: "The input closed before an answer was given." });
+  }));
+
+// A writable that keeps what is written to it, so a test can read the prompts and the echoed answers.
+const capture = (): { stream: Writable; text: () => string } => {
+  const chunks: string[] = [];
+  const stream = new Writable({
+    write: (chunk, _encoding, done) => {
+      chunks.push(String(chunk));
+      done();
+    },
+  });
+  return { stream, text: () => chunks.join("") };
+};
+
+test("an answer kept from the same chunk is echoed without its text when the text has the shape of a token", () =>
+  inTempFolder(async () => {
+    const input = new PassThrough();
+    const sink = capture();
+    const ask = terminalAsk(input, sink.stream);
+    input.write(`claude\n${TOKEN_SHAPED}\n`);
+    assert.equal(await within(ask("Which agents? "), 2000), "claude");
+    assert.equal(await within(ask("Which scope? "), 2000), TOKEN_SHAPED);
+    assert.equal(sink.text().includes(TOKEN_SHAPED), false);
+    assert.equal(sink.text().includes(TOKEN_NOTE), true);
+  }));
+
+test("a change that is not a dry run gets an interrupt handler, and the handler is removed when asked", () =>
+  inTempFolder(async () => {
+    const stream = discard();
+    const cases: [string[], number][] = [
+      [["install"], 1],
+      [["update", "claude"], 1],
+      [["uninstall", "--scope", "project"], 1],
+      [["install", "--dry-run"], 0],
+      [["uninstall", "--dry-run"], 0],
+      [["doctor"], 0],
+      [["serve"], 0],
+      [[], 0],
+    ];
+    for (const [argv, expected] of cases) {
+      const source = new EventEmitter();
+      const stop = watchInterrupt(argv, source, { stdout: stream, stderr: stream }, () => {});
+      assert.equal(source.listenerCount("SIGINT"), expected, argv.join(" "));
+      stop();
+      assert.equal(source.listenerCount("SIGINT"), 0, argv.join(" "));
+    }
+  }));
+
+test("an interrupt of a change writes the notice to stderr after the stdout lines already written, then exits 130", () =>
+  inTempFolder(async () => {
+    const order: string[] = [];
+    // A pipe can take its writes after a delay, so this stdout delays each write.
+    const stdout = new Writable({
+      write: (chunk, _encoding, done) => {
+        setTimeout(() => {
+          if (String(chunk) !== "") {
+            order.push("stdout line written");
+          }
+          done();
+        }, 20);
+      },
+    });
+    const stderr = new Writable({
+      write: (chunk, _encoding, done) => {
+        order.push(`stderr ${String(chunk).trimEnd()}`);
+        done();
+      },
+    });
+    const source = new EventEmitter();
+    const exited = new Promise<number>((resolve) => {
+      watchInterrupt(["install"], source, { stdout, stderr }, resolve);
+    });
+    stdout.write("the last plan line\n");
+    source.emit("SIGINT");
+    assert.equal(await within(exited, 2000), 130);
+    assert.deepEqual(order, ["stdout line written", `stderr ${INTERRUPT_NOTICE}`]);
+  }));
+
+test("install with stdin a pipe and stdout a terminal asks nothing, and refuses without --yes", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const calls: string[] = [];
+    const target = path.join(folder, "never-written.txt");
+    const adapters = [fakeAgent("claude", target, calls)];
+    const asked: string[] = [];
+    const result = await session.run(["install"], { adapters, terminal: false, stdoutTerminal: true, asked });
+    assert.equal(result.code, 2);
+    assert.deepEqual(asked, []);
+    assert.equal(calls.some((call) => call.endsWith(" real")), false);
+    assert.equal(existsSync(target), false);
+  }));
+
+test("install --dry-run prints the plan, exits 0, and writes no file", () =>
+  inTempFolder(async (folder) => {
+    const target = path.join(folder, "would-write.txt");
+    const calls: string[] = [];
+    const session = sessionIn(folder);
+    const result = await session.run(["install", "claude", "--dry-run"], {
+      adapters: [fakeAgent("claude", target, calls)],
+    });
+    assert.equal(result.code, 0);
+    assert.equal(existsSync(target), false);
+    assert.deepEqual(calls, ["install claude global dry"]);
+    assert.deepEqual(result.err, []);
+    assert.equal(
+      result.out.some((line) => line.includes(target)),
+      true,
+    );
+    assert.equal(result.out.includes("[ok] claude global: Would install claude."), true);
+    assert.equal(result.out.at(-1), "Dry run: nothing was changed.");
+  }));
+
+test("the change predicate is install, update and uninstall that are not dry runs, and the notice says a change had started", () =>
+  inTempFolder(async () => {
+    assert.equal(isChangeCommand(["install"]), true);
+    assert.equal(isChangeCommand(["update", "claude"]), true);
+    assert.equal(isChangeCommand(["uninstall", "--scope", "project"]), true);
+    assert.equal(isChangeCommand(["install", "--dry-run"]), false);
+    assert.equal(isChangeCommand(["uninstall", "--dry-run"]), false);
+    assert.equal(isChangeCommand(["doctor"]), false);
+    assert.equal(isChangeCommand(["serve"]), false);
+    assert.equal(isChangeCommand([]), false);
+    assert.equal(INTERRUPT_NOTICE.includes("If a change had started, it may be partly made."), true);
+  }));
+
+test("the uninstall line of the usage text says that the Claude marketplace stays", () =>
+  inTempFolder(async () => {
+    const line = usageText.split("\n").find((text) => text.includes("uninstall [agent...]"));
+    assert.equal(line?.includes("the Claude marketplace stay."), true);
+  }));
+
+test("a switch given twice is a usage error for install, update and uninstall, with exit 2, and calls no agent", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    const calls: string[] = [];
+    const target = path.join(folder, "never-written.txt");
+    const adapters = [fakeAgent("claude", target, calls)];
+    const cases = [
+      ["install", "--dry-run", "--dry-run"],
+      ["install", "--yes", "--yes"],
+      ["update", "--dry-run", "--dry-run"],
+      ["uninstall", "--dry-run", "--dry-run"],
+    ];
+    for (const argv of cases) {
+      const result = await session.run(argv, { adapters });
+      assert.equal(result.code, 2, argv.join(" "));
+      assert.deepEqual(result.err, ["Usage error.", usageText], argv.join(" "));
+      assert.deepEqual(result.out, [], argv.join(" "));
+    }
+    assert.deepEqual(calls, []);
+    assert.equal(existsSync(target), false);
   }));

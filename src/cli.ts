@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Registry } from "./accounts/registry.js";
 import { dataFolder } from "./paths.js";
-import { type CliIo, runCli } from "./run.js";
+import { type CliIo, runCli, terminalAsk, watchInterrupt } from "./run.js";
 import { readSecretFrom } from "./secret-input.js";
 import type { TokenStore } from "./secrets/token-store.js";
 import { type FetchLike, fetchProfile } from "./supabase/api.js";
@@ -37,6 +38,8 @@ const main = async (): Promise<void> => {
     const { KeyringTokenStore } = await import("./secrets/token-store.js");
     const registryFile = path.join(dataFolder(process.env, process.platform, os.homedir()), "accounts.json");
     const tokens = new KeyringTokenStore();
+    // The path of this file is the path of the installed program. Its package root is the folder above dist.
+    const cliPath = fileURLToPath(import.meta.url);
     const io: CliIo = {
       stdout: (text) => {
         process.stdout.write(`${text}\n`);
@@ -51,9 +54,24 @@ const main = async (): Promise<void> => {
       tokens,
       fetchProfile: (token) => fetchProfile(token, boundedFetch),
       addedAt: () => new Date().toISOString(),
+      flow: {
+        ask: terminalAsk(process.stdin, process.stdout),
+        cliPath,
+        packageRoot: path.resolve(path.dirname(cliPath), ".."),
+        projectDir: process.cwd(),
+        homeDir: os.homedir(),
+        env: process.env,
+      },
       serve: () => serveFromRegistryFile(registryFile, tokens),
     };
-    process.exitCode = await runCli(process.argv.slice(2), io);
+    // An interrupt during a change writes the notice and exits. Nothing is rolled back. A dry run or another command keeps the
+    // default interrupt.
+    const argv = process.argv.slice(2);
+    const stopWatching = watchInterrupt(argv, process, { stdout: process.stdout, stderr: process.stderr }, (code) => {
+      process.exit(code);
+    });
+    process.exitCode = await runCli(argv, io);
+    stopWatching();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`Error: ${message}\n`);

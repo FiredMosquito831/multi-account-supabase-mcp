@@ -1,11 +1,61 @@
+import { EventEmitter } from "node:events";
+import { createInterface } from "node:readline/promises";
 import { addAccount } from "./accounts/add-account.js";
 import { withRegistryLock } from "./accounts/lock.js";
 import { assertValidName } from "./accounts/names.js";
 import { Registry } from "./accounts/registry.js";
+import type { FlowIo } from "./install/flow.js";
 import { accountListText } from "./mux/account-tools.js";
 import type { TokenStore } from "./secrets/token-store.js";
 import type { Profile } from "./supabase/api.js";
 import { usageText } from "./usage.js";
+
+// The inputs of the install, update, uninstall and doctor commands that the CLI builds from the process: the question, the
+// folders, the environment and the program path. The terminal test, the output and the token store come from CliIo itself.
+export type FlowEnvironment = Omit<FlowIo, "isTerminal" | "out" | "tokens">;
+
+// The questions of a terminal install. Each question opens an interface on the input, and closes it after its answer. A line
+// that ends in the same chunk, after an answer, is kept for the next question. A line with no line end at the close of the
+// chunk is not kept, because readline does not report it, so the question after it starts without it. Ctrl+C at a question
+// closes the interface, and the question then fails.
+export const terminalAsk = (input: NodeJS.ReadableStream, output: NodeJS.WritableStream) => {
+  const kept: string[] = [];
+  return (question: string): Promise<string> => {
+    const earlier = kept.shift();
+    if (earlier !== undefined) {
+      output.write(`${question}${shown(earlier)}\n`);
+      return Promise.resolve(earlier);
+    }
+    return new Promise((resolve, reject) => {
+      const rl = createInterface({ input, output });
+      let answered = false;
+      let closed = false;
+      rl.once("close", () => {
+        closed = true;
+        reject(new Error("The input closed before an answer was given."));
+      });
+      rl.on("line", (line) => {
+        if (answered) {
+          kept.push(line);
+          return;
+        }
+        answered = true;
+        resolve(line);
+        // The interface closes after the chunk that holds this line has been read, so the lines after it are kept.
+        queueMicrotask(() => {
+          if (!closed) {
+            rl.close();
+          }
+        });
+      });
+      rl.on("SIGINT", () => {
+        rl.close();
+      });
+      rl.setPrompt(question);
+      rl.prompt();
+    });
+  };
+};
 
 // Everything a command reads or writes. cli.ts builds the real one, and the tests build fakes.
 export type CliIo = {
@@ -19,6 +69,7 @@ export type CliIo = {
   fetchProfile: (token: string) => Promise<Profile>;
   addedAt: () => string;
   serve: () => Promise<void>;
+  flow: FlowEnvironment;
 };
 
 // Text that contains sbp_ (in any case) has the shape of a token, and the CLI never prints it. A command or a name with
@@ -55,23 +106,33 @@ const usageError = (io: CliIo): number => {
   return 2;
 };
 
-type Parsed = { positional: string[]; flags: Set<string> };
+type Parsed = { positional: string[]; flags: Set<string>; values: Map<string, string> };
 
-// Splits the arguments of a command that takes the given flags. An argument that starts with "-" and is not one of
-// those flags is an unknown option, and the result is undefined.
-const parseArgs = (args: string[], flags: readonly string[]): Parsed | undefined => {
+// Splits the arguments of a command. A switch stands alone. A valued flag takes the next argument as its value, and the
+// value must not be empty or start with "-". A valued flag may be given once. Any other argument that starts with "-" is an
+// unknown option. Each of these gives undefined, which is a usage error.
+const parseArgs = (args: string[], switches: readonly string[], valued: readonly string[] = []): Parsed | undefined => {
   const positional: string[] = [];
-  const given = new Set<string>();
-  for (const arg of args) {
+  const flags = new Set<string>();
+  const values = new Map<string, string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (!arg.startsWith("-")) {
       positional.push(arg);
-    } else if (flags.includes(arg)) {
-      given.add(arg);
+    } else if (switches.includes(arg)) {
+      flags.add(arg);
+    } else if (valued.includes(arg)) {
+      const value = args[index + 1];
+      if (value === undefined || value === "" || value.startsWith("-") || values.has(arg)) {
+        return undefined;
+      }
+      values.set(arg, value);
+      index += 1;
     } else {
       return undefined;
     }
   }
-  return { positional, flags: given };
+  return { positional, flags, values };
 };
 
 // add <name> --pat. The token comes from the prompt, with hidden input, and never from a pipe or the chat.
@@ -241,6 +302,90 @@ const helpCommand = (args: string[], io: CliIo): number => {
   return 0;
 };
 
+// The io of the install commands: the parts the CLI builds from the process, with the terminal test taken from both streams,
+// the output going to stdout, and the token store of this run.
+const flowIoOf = (io: CliIo): FlowIo => ({
+  ...io.flow,
+  isTerminal: io.stdinIsTerminal && io.stdoutIsTerminal,
+  out: (line) => {
+    io.stdout(line);
+  },
+  tokens: io.tokens,
+});
+
+type ChangeAction = "install" | "update" | "uninstall";
+
+// The switches that each change command takes. Only install takes --yes, so the others refuse it as an unknown option.
+const CHANGE_SWITCHES: Record<ChangeAction, readonly string[]> = {
+  install: ["--dry-run", "--yes"],
+  update: ["--dry-run"],
+  uninstall: ["--dry-run"],
+};
+
+// The commands that change an agent's configuration, and a run of one of them that is not a dry run. cli.ts prints the notice
+// when such a run is interrupted. A dry run changes nothing, so an interrupt during one gets no notice.
+const CHANGE_COMMANDS: readonly string[] = ["install", "update", "uninstall"];
+export const isChangeCommand = (argv: readonly string[]): boolean =>
+  CHANGE_COMMANDS.includes(argv[0] ?? "") && !argv.includes("--dry-run");
+
+// The line written after an interrupt of a change. It says a change may be partly made only when one had started.
+export const INTERRUPT_NOTICE =
+  "Stopped by Ctrl+C. If a change had started, it may be partly made. Check the agent's own configuration, and run multi-account-supabase-mcp uninstall --dry-run to see what is recorded.";
+
+// Watches for an interrupt during a change that is not a dry run. Other commands get no handler. Returns a function that removes it.
+export const watchInterrupt = (
+  argv: readonly string[],
+  source: EventEmitter,
+  streams: { stdout: NodeJS.WritableStream; stderr: NodeJS.WritableStream },
+  exit: (code: number) => void,
+): (() => void) => {
+  if (!isChangeCommand(argv)) {
+    return () => {};
+  }
+  // Writes to a pipe or a console can finish after the call returns. An empty write to stdout waits for the lines already
+  // queued there, so the last line is written before the notice and the exit.
+  const handler = (): void => {
+    streams.stdout.write("", () => {
+      streams.stderr.write(`${INTERRUPT_NOTICE}\n`, () => exit(130));
+    });
+  };
+  source.once("SIGINT", handler);
+  return () => {
+    source.removeListener("SIGINT", handler);
+  };
+};
+
+// Install, update and uninstall. The named arguments are agent names, and --scope names one scope. The flow checks the names
+// and the scope, and it asks its own questions in a terminal, so this function only reads the command line.
+const changeCommand = async (action: ChangeAction, args: string[], io: CliIo): Promise<number> => {
+  // A switch given twice is refused, as a repeated valued flag is. The check sits here, not in parseArgs, so that add,
+  // default and remove keep their behaviour.
+  const repeated = CHANGE_SWITCHES[action].some((name) => args.filter((arg) => arg === name).length > 1);
+  const parsed = repeated ? undefined : parseArgs(args, CHANGE_SWITCHES[action], ["--scope"]);
+  if (parsed === undefined) {
+    return usageError(io);
+  }
+  const installFlow = await import("./install/flow.js");
+  return installFlow[action](
+    {
+      agents: parsed.positional,
+      scope: parsed.values.get("--scope"),
+      dryRun: parsed.flags.has("--dry-run"),
+      yes: parsed.flags.has("--yes"),
+    },
+    flowIoOf(io),
+  );
+};
+
+// doctor takes no argument and no flag.
+const doctorCommand = async (args: string[], io: CliIo): Promise<number> => {
+  if (args.length > 0) {
+    return usageError(io);
+  }
+  const installFlow = await import("./install/flow.js");
+  return installFlow.doctor(flowIoOf(io));
+};
+
 const dispatch = async (argv: string[], io: CliIo): Promise<number> => {
   if (argv.length === 0) {
     // No command: a terminal gets the usage text, and a pipe (an agent's stdio) starts the server.
@@ -262,6 +407,14 @@ const dispatch = async (argv: string[], io: CliIo): Promise<number> => {
       return removeCommand(args, io);
     case "serve":
       return serveCommand(args, io);
+    case "install":
+      return changeCommand("install", args, io);
+    case "update":
+      return changeCommand("update", args, io);
+    case "uninstall":
+      return changeCommand("uninstall", args, io);
+    case "doctor":
+      return doctorCommand(args, io);
     case "help":
     case "--help":
     case "-h":
