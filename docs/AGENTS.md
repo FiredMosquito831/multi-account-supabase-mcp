@@ -25,7 +25,7 @@ A scope says where an agent keeps the entry for this server. There are three sco
   - Codex: a table in `.codex/config.toml` in that folder (ASSUMED, not verified: the path), and a skill file in `.agents/skills`. The skill folder is ASSUMED, not verified, and Codex reads the project file only when the folder is trusted (ASSUMED, not verified).
   - opencode: `opencode.json` in that folder (file name ASSUMED, not verified). The folder must exist: install and update refuse it when it does not.
   - Claude Code: its project scope. The commands run in that folder.
-- **local** is Claude Code's local scope, for one project folder. Claude Code decides what the scope means. Not verified here.
+- **local** is Claude Code's local scope, for one project folder. Claude Code decides what the scope means (not verified here).
 
 ## Defaults
 

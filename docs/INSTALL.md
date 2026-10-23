@@ -5,14 +5,14 @@ This guide shows how to add the server to each agent with the install commands. 
 ## Before you start
 
 - Node 22 or newer.
-- The package is not published yet. Not verified: the install from npm. The examples use the command `multi-account-supabase-mcp`, which the package provides. Until the package is installed, run the same commands as `node dist/cli.js` from the checkout, after `npm run build`.
+- The package is not published yet (Not verified: checked on 2026-10-20 only). Not verified: the install from npm. The examples use the command `multi-account-supabase-mcp`, which the package provides. Until the package is installed, run the same commands as `node dist/cli.js` from the checkout, after `npm run build`.
 - Add at least one account before you use the server: `multi-account-supabase-mcp add <name> --pat`. Installing does not need an account, but the server refuses every call except `account_list` until an account exists. See `README.md`.
 - Run the install commands in a terminal window. A terminal lets the command ask questions. Without a terminal, add `--yes`.
 - Each install, update and uninstall command prints its plan before it changes anything. `--dry-run` prints the plan and changes nothing. In a terminal, a dry run also asks which agents, and which scope when `--scope` is not given, when no agent is named and `--yes` is not given. It still changes nothing.
 
 ## What an agent's entry starts
 
-For Codex, opencode and Antigravity, the entry starts the server with the Node program that ran the command, the command line program of this package, and the word `serve`. For example, `node <path to dist/cli.js> serve`. The entry holds no token. The token of each account stays in the credential store, and the server reads it from there. Claude Code gets the server from its plugin. The plugin is in this repository, and it is not published yet (checked on 2026-10-20 only; see the Claude Code section).
+For Codex, opencode and Antigravity, the entry starts the server with the Node program that ran the command, the command line program of this package, and the word `serve`. For example, `node <path to dist/cli.js> serve`. The entry holds no token. The token of each account stays in the credential store, and the server reads it from there. Claude Code gets the server from its plugin. The plugin is in this repository, and it is not published yet (Not verified: checked on 2026-10-20 only; see the Claude Code section).
 
 The record keeps the path of the command line program that ran the install. If that program moves, run `update` from its new location. `doctor` checks that the recorded command line program still exists. It does not check the Node program.
 
@@ -60,7 +60,7 @@ The `-y` flag makes the plugin install run without a prompt (not verified). Not 
 
 The global scope passes `--scope user`. The project and local scopes run the commands in the project folder.
 
-Not verified: the marketplace repository. It has not been created (checked on 2026-10-20 only), so the marketplace add is expected to fail until it exists. The plugin files are in this repository. Until the repository exists, the Claude Code step fails. Not verified: how the claude command responds to these commands. The install has not been run against a real Claude Code.
+Not verified: the marketplace repository. It has not been created (Not verified: checked on 2026-10-20 only), so the marketplace add is expected to fail until it exists. The plugin files are in this repository. Until the repository exists, the Claude Code step fails. Not verified: how the claude command responds to these commands. The install has not been run against a real Claude Code.
 
 Install does not check for an existing plugin with this name, so it does not refuse one. Not verified: the Claude Code listing does not show a scope that this tool can verify. See `SECURITY.md`, section 7.
 
@@ -89,10 +89,10 @@ In Claude Code, run these two commands (not verified: the Claude Code interface 
 /plugin install multi-account-supabase@multi-account-supabase-mcp
 ```
 
-- The marketplace repository must exist first. It has not been created (checked on 2026-10-20 only).
-- The marketplace add names no branch and no release. Claude Code is expected to read the default branch (ASSUMED, not verified). Whether Claude Code accepts a release ref is OPEN.
+- The marketplace repository must exist first. It has not been created (Not verified: checked on 2026-10-20 only).
+- The marketplace add names no branch and no release. Claude Code is expected to read the default branch (ASSUMED, not verified). Whether Claude Code accepts a release ref is not verified.
 - The plugin's server key is `supabase`, so its tools are expected to read `plugin:multi-account-supabase:supabase` (not verified).
-- The server starts through the launcher. It runs the installed command when that is on PATH, and otherwise `npx` with the plugin's version. The package is not published (checked on 2026-10-20 only). See "Claude Code plugin" in `README.md`.
+- The server starts through the launcher. It runs the installed command when that is on PATH, and otherwise `npx` with the plugin's version. The package is not published (Not verified: checked on 2026-10-20 only). See "Claude Code plugin" in `README.md`.
 - Add an account in a terminal window of your own, with `multi-account-supabase-mcp add <name> --pat`, as in `README.md`.
 
 ## Codex (`codex`)
@@ -105,7 +105,7 @@ Requirement: the `codex` command must be on PATH.
 
 Install runs `codex mcp add multi-account-supabase -- <Node program> <command line program> serve` (not verified: this command form). When the record does not list the entry, install runs `codex mcp list` (not verified: this command form) before it adds the entry. A dry run does not run that listing. If the listing cannot be read, install stops. If the listing names `multi-account-supabase` as a whole word, and this tool did not write it, install stops and changes nothing (ASSUMED, not verified: the layout of the listing). When the record lists the entry, install first checks it. The check reads the Codex configuration file (ASSUMED, not verified: `codex mcp add` writes the entry there). If the entry was edited, install refuses it: the entry is left in place, the record is kept, and the step is an error, so the exit is 1. An entry is edited when its arguments are not the recorded command line program path followed by `serve`, when its command is not an absolute path, or when it has an env key whose value is not an empty table (ASSUMED, not verified: the real layout of the entry is not run). An empty `env` table is not an edit, and other keys are ignored. A missing record of the program path makes the entry edited. A changed Node path is not detected as an edit. Update rewrites an unedited entry with the current command and arguments. The way out is to delete the entry by hand, or to run `codex mcp remove multi-account-supabase` (not verified: this command form), and then run this command again. If the entry was not edited, install first runs `codex mcp remove multi-account-supabase` (not verified: this command form), and then adds it again.
 
-Install also writes a skill file, `skills/supabase-accounts/SKILL.md`, in the Codex home folder. The Codex home folder is the `CODEX_HOME` variable, or `.codex` in your home folder when `CODEX_HOME` is not set. The location is ASSUMED, not verified: Codex reads user skills from that folder. ASSUMED: Codex has no command for installing skills, so this tool writes the file itself. The help text read for this covers `codex mcp` only. The skill file is replaced without a backup, and only when this tool created it. A skill file that this tool did not write is never replaced.
+Install also writes a skill file, `skills/supabase-accounts/SKILL.md`, in the Codex home folder (ASSUMED, not verified: the Codex home folder). The Codex home folder is the `CODEX_HOME` variable, or `.codex` in your home folder when `CODEX_HOME` is not set (ASSUMED, not verified: the location Codex reads user skills from). ASSUMED: Codex has no command for installing skills, so this tool writes the file itself. The help text read for this covers `codex mcp` only. The skill file is replaced without a backup, and only when this tool created it. A skill file that this tool did not write is never replaced.
 
 Uninstall runs `codex mcp remove multi-account-supabase` (not verified: this command form), then removes the skill file. If the output of that command has a line with the server name and the words "not found", "not installed", "does not exist", "no such" or "no mcp server", uninstall treats the server as absent and clears the record (ASSUMED, not verified: that wording). Any other failure keeps the record, so uninstall can try again. If the entry was edited, uninstall leaves it in place, keeps the record, and the step is an error. The way out is the same as in the install section. It removes the folders that this tool made, when they are empty.
 
@@ -152,7 +152,7 @@ Scopes: global only.
 
 Requirement: the `agy` command must be on PATH. The check runs in a dry run too.
 
-Install runs `agy mcp list` first (not verified: this command form), unless the entry is already recorded. If the listing names `multi-account-supabase`, and this tool did not write it, install stops and changes nothing. Then install runs `agy mcp add multi-account-supabase <Node program> <command line program> serve` (not verified: this command form). The listing format is not verified.
+Install runs `agy mcp list` first (not verified: this command form), unless the entry is already recorded. A dry run does not run that listing. If the listing names `multi-account-supabase`, and this tool did not write it, install stops and changes nothing. Then install runs `agy mcp add multi-account-supabase <Node program> <command line program> serve` (not verified: this command form). The listing format is not verified.
 
 Update removes the entry and adds it again. Uninstall runs `agy mcp remove multi-account-supabase` (not verified: this command form). Not verified: the wording agy uses when an entry is absent. The uninstall step treats some wording as "not installed" (ASSUMED, not verified: the wording agy uses). Other failures keep the record, so a later uninstall can try again.
 

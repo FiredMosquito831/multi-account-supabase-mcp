@@ -111,7 +111,7 @@ The `remove` command for an account is a different command. It prints that the S
 
 ### `The marketplace was added and is still registered.`
 
-Install added the Claude Code marketplace, and then the plugin install failed. The marketplace stays. Run the removal command that the step prints, or run install again after the problem is fixed. Not verified: the cause of the plugin failure, since the Claude Code plugin is not built yet.
+Install added the Claude Code marketplace, and then the plugin install failed. The marketplace stays. Run the removal command that the step prints, or run install again after the problem is fixed. Not verified: the cause of the plugin failure, since the Claude Code plugin is not published yet.
 
 ### `The folder <dir> holds <file>, and cmd.exe searches that folder before PATH. Nothing was run.`
 
