@@ -21,6 +21,25 @@ Not verified yet, because none of these has been run:
 - The installers against a real Claude Code, Codex, opencode or Antigravity. The file locations, the listings and the entry layouts are ASSUMED for some agents. Each one is marked in `docs/INSTALL.md` and `docs/AGENTS.md`.
 - The Claude Code marketplace, `FiredMosquito831/multi-account-supabase-mcp`. It is not created (not verified: checked on 2026-10-20 only), so the Claude Code install step is expected to fail until it exists.
 
+## Documentation
+
+The documentation pages are linked below, in the repository on GitHub (Not verified: the repository does not exist yet, so these links do not open until it is created).
+
+- [docs/INSTALL.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/INSTALL.md)
+- [docs/ACCOUNTS.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/ACCOUNTS.md)
+- [docs/AGENTS.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/AGENTS.md)
+- [docs/CONFIGURATION.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/CONFIGURATION.md)
+- [docs/DEVELOPMENT.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/DEVELOPMENT.md)
+- [docs/MCP.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/MCP.md)
+- [docs/SAFETY.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/SAFETY.md)
+- [docs/TESTING.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/TESTING.md)
+- [docs/TROUBLESHOOTING.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/TROUBLESHOOTING.md)
+- [docs/USAGE.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/USAGE.md)
+- [docs/RELEASING.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/docs/RELEASING.md)
+- [CHANGELOG.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/CHANGELOG.md)
+- [CONTRIBUTING.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/CONTRIBUTING.md)
+- [SECURITY.md](https://github.com/FiredMosquito831/multi-account-supabase-mcp/blob/main/SECURITY.md)
+
 ## Build and test from the checkout
 
 Run these in the checkout folder:
