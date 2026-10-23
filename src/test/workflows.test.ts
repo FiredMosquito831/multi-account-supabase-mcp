@@ -84,7 +84,7 @@ test("every uses line in every workflow pins a full commit SHA with the tag in a
   }
 });
 
-// Task 4: the publish workflow. It is written and not run.
+// The publish workflow. It is written and not run.
 const PUBLISH_REPO = "FiredMosquito831/multi-account-supabase-mcp";
 
 // The lines of one job under `jobs:`, from its key to the next job key.
@@ -111,14 +111,13 @@ function jobIf(block: string): string {
   return block.split(/\r?\n/).find((line) => /^\s+if:/.test(line)) ?? "";
 }
 
-test("npm.yml runs on a published release and on a push to main that changes package.json", () => {
+test("npm.yml runs only on a published release, with no push trigger", () => {
   const text = readWorkflow("npm.yml");
   assert.match(text, /^on:/m);
   assert.match(text, /^\s+release:/m);
   assert.match(text, /types:\s*\[\s*published\s*\]/);
-  assert.match(text, /^\s+push:/m);
-  assert.match(text, /branches:\s*\[\s*main\s*\]/);
-  assert.match(text, /paths:\s*\[[^\]]*\bpackage\.json\b[^\]]*\]/);
+  assert.doesNotMatch(text, /^\s+push:/m, "npm.yml must have no push trigger: the bump commit carries [skip ci]");
+  assert.doesNotMatch(text, /^\s+paths:/m);
   assert.doesNotMatch(text, /^\s+pull_request/m);
 });
 
@@ -136,12 +135,12 @@ test("npm.yml tests on Windows and Ubuntu with Node 22, and the publish job need
   assert.match(jobBlock(text, "publish"), /^\s+needs:.*\btest\b/m);
 });
 
-test("npm.yml decides from git, not from the registry, whether a push carries a new version", () => {
+test("npm.yml's check-version job compares the release tag with package.json, with no push branch", () => {
   const text = readWorkflow("npm.yml");
   const check = jobBlock(text, "check-version");
-  assert.match(check, /fetch-depth:\s*0\b/, "check-version must fetch the history to read the previous version");
-  assert.match(check, /github\.event\.before/, "check-version must compare with the commit before the push");
-  assert.match(text, /git show\b/, "npm.yml must read the previous package.json with git show");
+  assert.match(check, /github\.event\.release\.tag_name/, "check-version must read the release tag");
+  assert.doesNotMatch(check, /\bpush\b/, "check-version must have no push branch");
+  assert.doesNotMatch(check, /github\.event\.before|BEFORE_SHA|git show/, "check-version must not read the commit before a push");
   assert.doesNotMatch(text, /\bnpm\s+(view|info|search|access|owner|whoami)\b/, "npm.yml must not call the npm registry");
 });
 
@@ -175,23 +174,25 @@ test("npm.yml holds no npm token and reads no secret", () => {
   assert.doesNotMatch(text, /secrets\./);
 });
 
-test("npm.yml publishes only in the owner's repository, and only when the version is new", () => {
+test("npm.yml publishes only in the maintainer's repository, and only when check-version says so", () => {
   const text = readWorkflow("npm.yml");
   const guard = `github.repository == '${PUBLISH_REPO}'`;
-  assert.ok(jobIf(jobBlock(text, "check-version")).includes(guard), "check-version must name the owner's repository in its if:");
+  assert.ok(jobIf(jobBlock(text, "check-version")).includes(guard), "check-version must name the repository in its if:");
   const publishIf = jobIf(jobBlock(text, "publish"));
-  assert.ok(publishIf.includes(guard), "publish must name the owner's repository in its if:");
+  assert.ok(publishIf.includes(guard), "publish must name the repository in its if:");
   assert.ok(
     publishIf.includes("needs.check-version.outputs.publish == 'true'"),
-    "publish must run only when check-version finds a new version",
+    "publish must run only when check-version sets publish to true",
   );
 });
 
-test("npm.yml says at its top that it is written and not run, and that the first publish is the owner's", () => {
+test("npm.yml says at its top that it is written and not run, that it publishes only from a published release, and that the first publish is the maintainer's", () => {
   const header = readWorkflow("npm.yml").split(/\r?\n/).slice(0, 20).join("\n");
   assert.match(header, /not run/i);
   assert.match(header, /trusted publisher/i);
   assert.match(header, /terminal/i);
+  assert.match(header, /published release/i);
+  assert.match(header, /\[skip ci\]/);
 });
 
 test("npm.yml uses only the action pins that ci.yml uses", () => {
