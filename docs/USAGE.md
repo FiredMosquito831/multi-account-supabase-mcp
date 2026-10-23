@@ -50,7 +50,7 @@ A name or an agent name that has the token prefix, in any letter case, is refuse
 That input looks like a token, so it is not repeated.
 ```
 
-This applies to `add`, `default`, `remove`, `install`, `update`, `uninstall` and an unknown command. For `add`, the message about a missing `--pat` or piped input comes first, when either applies. The commands `list`, `serve`, `help` and `doctor` take no name. For them, a token-shaped argument gives the usage error, with exit 2.
+This applies to `add`, `default`, `remove`, `install`, `update`, `uninstall` and an unknown command. For `add`, a missing `--pat` or piped input prints its own message and nothing more. The commands `list`, `serve`, `help` and `doctor` take no name. For them, a token-shaped argument gives the usage error, with exit 2.
 
 Installer output (plans, step lines and reasons) shows any text of the token shape as `[redacted]`. Source: `src/run.ts`, `src/install/flow.ts`.
 
@@ -249,7 +249,7 @@ Exit 0 when no row is an error. Exit 1 when a row is an error. Exit 130 when Ctr
 multi-account-supabase-mcp update [agent...] [--scope <scope>] [--dry-run]
 ```
 
-Runs again for each scope where a record lists the agent. It rewrites the entries so that they point at the program that runs `update`, and it records that path. Update takes no `--yes`, and it never asks a question. With `--yes`, the command prints the usage text and exits 2.
+Runs again for each scope where a record lists the agent. It rewrites the entries so that they point at the program that runs `update`, and it records that path. Update takes no `--yes`, and it never asks a question. With `--yes`, the command prints `Usage error.`, then the usage text, and exits 2.
 
 - Without `--scope`, it acts on the global scope, and on the project and local scopes of the current folder, where a record exists.
 - A named agent with no record in a scope gets one skipped row for that scope: `[skipped] <agent> <scope>: no record in this scope, so nothing was changed.`
@@ -264,7 +264,7 @@ The plan, the rows and the exit codes work as they do for install. Update asks n
 multi-account-supabase-mcp uninstall [agent...] [--scope <scope>] [--dry-run]
 ```
 
-Removes what install recorded. It takes the same options as update, and it never asks a question. With `--yes`, it prints the usage text and exits 2.
+Removes what install recorded. It takes the same options as update, and it never asks a question. With `--yes`, it prints `Usage error.`, then the usage text, and exits 2.
 
 It does not remove:
 

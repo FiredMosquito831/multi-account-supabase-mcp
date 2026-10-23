@@ -50,7 +50,7 @@ Which test covers what is in [TESTING.md](TESTING.md).
 | `scripts/capture-official-tools.mjs` | Writes a new copy of the saved list. It needs network access. |
 | `docs/` | These pages. Other folders under `docs/` hold design and research notes. They are not part of the package. |
 
-The package ships the entries of `files` in `package.json` (lines 12 to 21): `dist/` without `dist/test/`, `.claude-plugin/`, `plugins/`, `skills/`, `README.md`, `LICENSE` and `NOTICE`.
+The package ships the entries of `files` in `package.json` (lines 20 to 29): `dist/` without `dist/test/`, `.claude-plugin/`, `plugins/`, `skills/`, `README.md`, `LICENSE` and `NOTICE`.
 
 ## Classifying an official tool
 

@@ -64,10 +64,10 @@ See the README section "Removing an account".
 
 - A program that runs as the same user may be able to read the credential store, and the environment of a child process. This is how operating systems normally work. It has not been tested here.
 - A token that Supabase has revoked is found only when a call uses it. Not verified: what Supabase returns for a revoked token. The add command checks the token once, when the account is added.
-- In the official build that this tool uses, destructive SQL and `apply_migration` run without a confirmation step. This tool adds no gate of its own. This was read in the official build's code. It was not checked with a live call.
+- In the official build that this tool uses, destructive SQL and `apply_migration` run without a confirmation step (Not verified: not checked with a live call). This tool adds no gate of its own. This was read in the official build's code.
 - An accounts file that is edited by hand can name accounts. The tool still needs a stored token for each one. An account with no stored token is refused, and no child is started for it.
 - A change that times out may still have run at Supabase. The reply says so.
-- The continuous integration on Ubuntu is not set up yet.
+- The CI workflow (`.github/workflows/ci.yml`) is written and has not run. Not verified: it runs on GitHub.
 - The installers have not been run against a real Claude Code, Codex, opencode or Antigravity. The commands they run, the Codex and Antigravity listings, the opencode file layout and the Codex skill folders are not verified. Some of these are ASSUMED, and the docs mark each one.
 
 ## 7. The installers
@@ -112,7 +112,7 @@ The plugin is in `plugins/multi-account-supabase/`. Its rules:
 - **On Windows, the command goes through a shell.** The launcher joins the command and its arguments into one shell string, after the check above (`bin/launch.mjs`, lines 127 to 128). That check is what keeps the join safe.
 - **A stop signal may not reach the server on Windows.** The launcher forwards SIGINT and SIGTERM to the server (`bin/launch.mjs`, lines 136 to 144). On Windows the signal reaches `cmd.exe` and not the server, so the server may not close its account processes when the plugin stops (ASSUMED, not verified: check on Windows, OPEN).
 - **The launcher does not check the installed copy's version.** When the command is on PATH, the launcher runs it as it is, even if its version differs from the plugin's (`bin/launch.mjs`, lines 100 to 103).
-- **The npx route fetches the package from npm.** It runs `npx -y`, which installs the package without a prompt (ASSUMED, not verified: npx was not run). The package is not published (checked on 2026-10-20 only).
+- **The npx route fetches the package from npm.** It runs `npx -y`, which installs the package without a prompt (ASSUMED, not verified: npx was not run). The package is not published (Not verified: checked on 2026-10-20 only).
 - **The marketplace declares no command, hook or server.** Its file has one plugin entry and no other list (`.claude-plugin/marketplace.json`; `src/test/plugin-manifest.test.ts`). The installer's `-y` flag is safe only while this stays true. Whether `-y` then accepts nothing is not verified (see section 7).
 - **The MCP entry holds no token and no environment.** The entry in `.mcp.json` has no `env` key. The token stays in the credential store, and the server reads it there (`src/test/plugin-files.test.ts`).
 

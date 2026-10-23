@@ -4,12 +4,16 @@ A scope says where an agent keeps the entry for this server. There are three sco
 
 ## Which agent supports which scope
 
+Which scopes each agent supports is ASSUMED, not verified.
+
 | Agent | global | project | local |
 | --- | --- | --- | --- |
 | Claude Code (`claude`) | yes, Claude Code's user scope (ASSUMED, not verified) | yes | yes |
 | Codex (`codex`) | yes | yes (ASSUMED, not verified) | no |
 | opencode (`opencode`) | yes | yes (ASSUMED, not verified) | no |
 | Antigravity (`antigravity`) | yes | no (ASSUMED, not verified) | no (ASSUMED, not verified) |
+
+Note: the table shows the scopes that the code accepts (`src/agents/scopes.ts`, lines 19 to 24). Whether each agent supports them is ASSUMED, not verified; see the sentence above the table.
 
 - `local` is for Claude Code only.
 - Antigravity has the `global` scope only (ASSUMED, not verified: that agy has no project or local scope). The code sets this.

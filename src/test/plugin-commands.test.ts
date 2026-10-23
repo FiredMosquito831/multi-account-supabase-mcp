@@ -114,9 +114,9 @@ test("add-account, set-default and remove-account each give their npx terminal l
   }
 });
 
-test("remove-account.md asks the owner to confirm the name in the chat before it gives the terminal line", () => {
+test("remove-account.md asks the person who uses the plugin to confirm the name in the chat before it gives the terminal line", () => {
   const text = readCommand("remove-account");
-  const ask = text.indexOf("ask the owner in this chat to confirm the name");
+  const ask = text.indexOf("ask the person who uses the plugin, in this chat, to confirm the name");
   const line = text.indexOf(`npx -y multi-account-supabase-mcp@${VERSION} remove <name>`);
   assert.ok(ask >= 0, "remove-account.md has the chat confirmation sentence");
   assert.ok(line >= 0, "remove-account.md has the remove terminal line");
@@ -130,8 +130,8 @@ test("remove-account.md says the Supabase token still works until it is revoked"
 test("remove-account.md says the CLI asks in the terminal before it removes, and needs --yes without a terminal", () => {
   const text = readCommand("remove-account");
   assert.ok(
-    text.includes("The CLI asks in the terminal before it removes the account, and the owner types y there."),
-    "remove-account.md says the CLI asks in the terminal, and the owner types y",
+    text.includes("The CLI asks in the terminal before it removes the account, and the person who uses the plugin types y there."),
+    "remove-account.md says the CLI asks in the terminal, and the person who uses the plugin types y",
   );
   assert.ok(
     text.includes("Without a terminal, the command needs `--yes` after the name."),

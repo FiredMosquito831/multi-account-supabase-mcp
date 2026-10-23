@@ -12,7 +12,7 @@ The test files use fakes and temporary folders. They are meant to stay offline, 
 
 ## The test files
 
-The test files are in `src/test/`. The lists below come from the test names in each file. Each line says what the file covers. `src/test/isolation.ts` is a helper that the tests share. It is not a test file. There are 38 test files.
+The test files are in `src/test/`. The lists below come from the test names in each file. Each line says what the file covers. `src/test/isolation.ts` is a helper that the tests share. It is not a test file. There are 40 test files.
 
 ### Server and tool list
 
@@ -67,6 +67,8 @@ The test files are in `src/test/`. The lists below come from the test names in e
 - `docs-links.test.ts`: the relative links in the documents resolve. The README uses absolute links only.
 - `workflows.test.ts`: the CI and publish workflow files. It covers the triggers, the Windows and Ubuntu matrix on Node 22, the checks each job runs, the permissions, and the action pins. It also checks that this page has one go-ahead line for each live check.
 - `version.test.ts`: reading the version from a `package.json` file.
+- `versions.test.ts`: the five version values in the four files (`package-lock.json` has two) are the same, and each one is a version string.
+- `shipped-files.test.ts`: the files that the package ships, and the documents, hold no personal path, no email address and no token-shaped text. The test also checks that its own check finds each of those.
 
 ### Safety and isolation
 

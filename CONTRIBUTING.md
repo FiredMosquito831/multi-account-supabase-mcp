@@ -2,7 +2,7 @@
 
 ## Set up
 
-- Use Node 22 or newer. Node 22 has not been run here. `package.json` sets `engines` to `>=22`. The local runtime used so far is Node 24.6.0, with npm 11.14.1. The continuous integration on Node 22 is not set up yet.
+- Use Node 22 or newer. Node 22 has not been run here. `package.json` sets `engines` to `>=22`. The local runtime used so far is Node 24.6.0, with npm 11.14.1. The CI workflow (`.github/workflows/ci.yml`) is written and has not run. Not verified: it runs on GitHub.
 - Run `npm install` in the checkout.
 - To look at the installers without changing any agent, run `node dist/cli.js install --dry-run` after `npm run build`. A dry run changes nothing. It reads your data folder, the PATH and the agent files it would change, and it runs no agent command. In a terminal, with no agent named, it first asks which agents and, when no `--scope` is given, which scope. It writes nothing either way. A real install, update or uninstall changes an agent's own configuration, so run those only in a throwaway setup.
 
@@ -56,7 +56,7 @@ The install, update, uninstall and doctor commands are in `src/install/flow.ts`.
 
 - The plugin is in `plugins/multi-account-supabase/`: the manifest in `.claude-plugin/plugin.json`, the server entry in `.mcp.json`, the launcher in `bin/launch.mjs`, the five command files in `commands/`, and a copy of the skill in `skills/supabase-accounts/SKILL.md`. The marketplace is `.claude-plugin/marketplace.json` at the repository root.
 - The launcher uses only Node built-ins. Do not add a dependency to it.
-- The plugin, the package and the marketplace share one version. Change `plugin.json`, `package.json` and the `metadata.version` of the marketplace in the same change. `src/test/plugin-manifest.test.ts` checks them.
+- The plugin, the package and the marketplace share one version. Change `plugin.json`, `package.json`, `package-lock.json` (its top-level `version` and `packages[""].version`) and the `metadata.version` of the marketplace in the same change. `src/test/plugin-manifest.test.ts` and `src/test/versions.test.ts` check them.
 - The same version is written in the terminal lines of `add-account.md`, `set-default.md` and `remove-account.md`, and in the skill. Change those in the same change too. `src/test/plugin-commands.test.ts` and `src/test/plugin-files.test.ts` check them.
 - Copy the root skill into the plugin with `cp`, then run `npm test`. The two files must be byte-identical (`src/test/plugin-files.test.ts`).
 - In a command file, do not put `$ARGUMENTS`, `$1` or user text into a `!` line. Only the `accounts` and `doctor` lines may run a command. `src/test/plugin-commands.test.ts` checks this.

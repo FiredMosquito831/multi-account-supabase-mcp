@@ -7,7 +7,7 @@ multi-account-supabase-mcp is a local MCP server. It wraps the official Supabase
 - The core and the command-line tool work. They are tested offline.
 - The installers are built and tested offline for four agents: Claude Code, Codex, opencode and Antigravity. They are tested with fake command results and temporary folders, and not against a real agent. See the install, update, uninstall and doctor commands under "Commands".
 - The Claude Code plugin is in this repository, in `plugins/multi-account-supabase`. It is tested offline. It has not been run in Claude Code (not verified). See "Claude Code plugin" below.
-- The package is not published.
+- The package is not published (Not verified: checked on 2026-10-20 only).
 - It needs Node 22 or newer. See `engines` in `package.json`.
 
 Not verified yet, because none of these has been run:
@@ -259,7 +259,7 @@ The plugin carries one skill, `supabase-accounts`. Its file is a byte copy of `s
 - The Claude Code interface, the command names, the tool ids and the manual install route. None was run.
 - The installer's `claude plugin` commands against a real Claude Code. See the installer route above.
 - The dashboard steps for creating a token with scopes are OPEN. They are read again before a release.
-- The repository `FiredMosquito831/multi-account-supabase-mcp` and the package `multi-account-supabase-mcp` do not exist on GitHub or npm yet (checked on 2026-10-20 only).
+- The repository `FiredMosquito831/multi-account-supabase-mcp` and the package `multi-account-supabase-mcp` do not exist on GitHub or npm yet (Not verified: checked on 2026-10-20 only).
 
 ## Exit codes
 
@@ -276,7 +276,7 @@ Most errors go to stderr with the prefix `Error:`. Usage errors, unknown command
 Error: Invalid account name "Work". Use 1-32 lowercase letters, digits or hyphens, starting with a letter or digit.
 ```
 
-A usage error prints `Usage error.` and then the usage text. On a command line, text that contains `sbp_` in any letter case is refused. In installer output (plans, step lines and reasons), text shaped like a token, `sbp_` followed by letters, digits, underscores or hyphens, is shown as `[redacted]`. A bare `sbp_` with nothing after it is printed. For `add`, `default`, `remove`, `install`, `update` and `uninstall` with a name that has such text, and for an unknown command, the output is the note below, and the exit code is 2. For `add`, the --pat or terminal message is printed first when it applies. The commands `list`, `serve`, `help` and `doctor` take no name. With a token-shaped argument they print `Usage error.` and the usage text, with exit code 2, and not the note. The note below is printed for the commands named above:
+A usage error prints `Usage error.` and then the usage text. On a command line, text that contains `sbp_` in any letter case is refused. In installer output (plans, step lines and reasons), text shaped like a token, `sbp_` followed by letters, digits, underscores or hyphens, is shown as `[redacted]`. A bare `sbp_` with nothing after it is printed. For `add`, `default`, `remove`, `install`, `update` and `uninstall` with a name that has such text, and for an unknown command, the output is the note below, and the exit code is 2. For `add`, when the --pat or terminal message applies, the command prints that message and nothing more. The commands `list`, `serve`, `help` and `doctor` take no name. With a token-shaped argument they print `Usage error.` and the usage text, with exit code 2, and not the note. The note below is printed for the commands named above:
 
 ```
 That input looks like a token, so it is not repeated.
@@ -374,7 +374,7 @@ The installers keep one record file for each agent, in the `state` folder of the
 - Reading the official tool list needs network access (read in the code, not run). With no accounts, no call reads it. The official server reads the `search_docs` description from Supabase's docs service. This was read in the official package's code. It has not been run.
 - With no accounts, the tool list shows only `account_list`. Every other call, including `search_docs`, is refused with the setup text, before any child starts, until an account is added.
 - A read-only query tool is in the code, but it is switched off. It is not listed, and a call to it is refused as an unknown tool when at least one account exists. It stays off until a separate check is done.
-- The official server runs destructive SQL, and `apply_migration`, without a confirmation step, in the build this tool uses. This tool adds no confirmation step of its own. This was read in the official build. It was not checked with a live call.
+- The official server runs destructive SQL, and `apply_migration`, without a confirmation step, in the build this tool uses (Not verified: not checked with a live call). This tool adds no confirmation step of its own. This was read in the official build.
 - Every official child starts with all nine feature groups: `docs`, `account`, `database`, `debugging`, `development`, `functions`, `branching`, `storage` and `notebooks`. The official defaults leave out `storage` and `notebooks`.
 - On Windows, each child process receives eight system names that the Windows process start adds when the child's environment does not have them (not verified: the names reaching the child in a live run were not checked; the list is in a code comment, and no test checks it). None of them is a credential. See `SECURITY.md`.
 - The token of an account is in the environment of its child process while that process runs. See `SECURITY.md`.
