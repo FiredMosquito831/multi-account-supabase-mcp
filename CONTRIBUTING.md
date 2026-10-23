@@ -4,7 +4,7 @@
 
 - Use Node 22 or newer. Node 22 has not been run here. `package.json` sets `engines` to `>=22`. The local runtime used so far is Node 24.6.0, with npm 11.14.1. The continuous integration on Node 22 is not set up yet.
 - Run `npm install` in the checkout.
-- To look at the installers without changing any agent, run `node dist/cli.js install --dry-run` after `npm run build`. A dry run changes nothing. It reads your data folder, the PATH and the agent files it would change, and it runs no agent command. A real install, update or uninstall changes an agent's own configuration, so run those only in a throwaway setup.
+- To look at the installers without changing any agent, run `node dist/cli.js install --dry-run` after `npm run build`. A dry run changes nothing. It reads your data folder, the PATH and the agent files it would change, and it runs no agent command. In a terminal, with no agent named, it first asks which agents and, when no `--scope` is given, which scope. It writes nothing either way. A real install, update or uninstall changes an agent's own configuration, so run those only in a throwaway setup.
 
 ## Run the checks
 
@@ -21,9 +21,9 @@ The file `test/fixtures/official-tools.json` holds the official tool list. To re
 - Tests use fakes and temporary folders. A test makes its folder with `mkdtemp` or `mkdtempSync`, and removes it when it ends.
 - A test does not use the network. Use a fake `fetch`.
 - A test does not use the credential store. Use a fake store.
-- No test uses a real token. The sbp_-shaped values in the refusal tests are fake. Use a plain, obviously fake value.
+- No test uses a real token. The token-shaped values in the refusal tests are fake. Use a plain, obviously fake value.
 - The one test that starts the official package leaves out the docs group. It uses the placeholder token.
-- An installer test sets `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `CODEX_HOME`, `XDG_CONFIG_HOME` and `MULTI_ACCOUNT_SUPABASE_HOME` to temporary folders. It uses fake command results in place of the agents. `src/test/no-real-config.test.ts` checks that no file outside the temporary folders changes.
+- An installer test sets `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `CODEX_HOME`, `XDG_CONFIG_HOME` and `MULTI_ACCOUNT_SUPABASE_HOME` to temporary folders. It uses fake command results in place of the agents. `src/test/no-real-config.test.ts` checks every path passed to the context's write, remove, folder-create and remove-empty functions, and every command's working folder, for each adapter, each scope and each action. It checks that the seven location names are set, and it checks the record path by location only. It does not check direct file-system calls made by the record code, and it does not check reads.
 - Each uninstall test has a case with no record.
 - A test that would still pass without the behaviour it names must be rewritten so that it fails without that behaviour.
 
@@ -43,7 +43,7 @@ The install, update, uninstall and doctor commands are in `src/install/flow.ts`.
 - Each adapter acts only on what its record lists. Update and uninstall never act on an item that the record does not list.
 - For Codex, opencode and Antigravity, install refuses an entry, table or file that this tool did not write, and it never takes one over. The Claude Code install does not check for an existing plugin. See `SECURITY.md`, section 7.
 - Refuse a file that cannot be parsed. Read and check the record before the first change.
-- Back up a config file, such as the Codex project `config.toml` or opencode's `opencode.json`, before an edit. A backup takes the first free name and is never overwritten. Uninstall never removes a backup. The one exception is `SKILL.md`: it is replaced without a backup, and only when the record lists it as created by this tool.
+- Back up a config file, such as the Codex project `config.toml` or opencode's `opencode.json` (names ASSUMED, not verified), before an edit. A backup takes the first free name and is never overwritten. Uninstall never removes a backup. The one exception is `SKILL.md`: it is replaced without a backup, and only when the record lists it as created by this tool.
 - Write a record before an edit to a file, so a failed edit leaves a record that describes nothing, except for an agent's own command, where the record is written after the command, because the command is the change, as the Claude Code install does; if that record cannot be written, the step says what to remove.
 - A dry run lists each command line and each file change, and it changes nothing. A check that a program is on PATH runs in a dry run, because it only reads. A listing does not run in a dry run, and the step says so. Each dry-run message says what would happen, with "Would", and never what happened.
 - A failed step gives one line. It uses the first non-empty line of the error output, then the first non-empty line of the standard output, then the exit code. The exception is the Claude Code install, which can give more than one line: one for each failed command, and a note about the marketplace.

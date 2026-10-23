@@ -18,7 +18,7 @@ export const usageText = [
   "Options for install, update and uninstall:",
   "  --scope <scope>       global, project or local. Antigravity has global only.",
   "                        Install uses global when none is given. Update and uninstall",
-  "                        act in every scope where a record exists when none is given.",
+  "                        act on global and on this folder's project and local scopes, where a record exists, if none is given.",
   "  --dry-run             Show the plan and change nothing.",
   "  --yes                 Install only: apply the plan without asking.",
 ].join("\n");

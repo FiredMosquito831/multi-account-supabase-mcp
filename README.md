@@ -6,7 +6,7 @@ multi-account-supabase-mcp is a local MCP server. It wraps the official Supabase
 
 - The core and the command-line tool work. They are tested offline.
 - The installers are built and tested offline for four agents: Claude Code, Codex, opencode and Antigravity. They are tested with fake command results and temporary folders, and not against a real agent. See the install, update, uninstall and doctor commands under "Commands".
-- The Claude Code plugin is not built yet. The Claude Code install step needs a marketplace that is not published yet.
+- The Claude Code plugin is not built yet. The Claude Code install step needs a marketplace that is not published yet (not verified: checked on 2026-10-20 only).
 - The package is not published.
 - It needs Node 22 or newer. See `engines` in `package.json`.
 
@@ -19,7 +19,7 @@ Not verified yet, because none of these has been run:
 - Node 22. The local runtime is Node 24.6.0.
 - The MCP protocol version 2026-07-28. Only the older startup path is tested.
 - The installers against a real Claude Code, Codex, opencode or Antigravity. The file locations, the listings and the entry layouts are ASSUMED for some agents. Each one is marked in `docs/install.md` and `docs/scopes.md`.
-- The Claude Code marketplace, `FiredMosquito831/multi-account-supabase-mcp`. It is not created, so the Claude Code install step is expected to fail until it exists.
+- The Claude Code marketplace, `FiredMosquito831/multi-account-supabase-mcp`. It is not created (not verified: checked on 2026-10-20 only), so the Claude Code install step is expected to fail until it exists.
 
 ## Build and test from the checkout
 
@@ -141,7 +141,7 @@ Commands:
 Options for install, update and uninstall:
   --scope <scope>       global, project or local. Antigravity has global only.
                         Install uses global when none is given. Update and uninstall
-                        act in every scope where a record exists when none is given.
+                        act on global and on this folder's project and local scopes, where a record exists, if none is given.
   --dry-run             Show the plan and change nothing.
   --yes                 Install only: apply the plan without asking.
 ```
@@ -156,7 +156,7 @@ multi-account-supabase-mcp install claude codex --scope project
 multi-account-supabase-mcp install --yes
 ```
 
-- In a terminal, with no agent named and no `--yes`, the command asks which agents and, when `--scope` is not given, which scope. Then it prints the plan and asks `Apply these changes? [y/N]`. Only `y` or `yes`, in any letter case, applies it. Ctrl+C at any of the three questions stops the command with exit code 1, and no change is made. Not verified in a real terminal.
+- In a terminal, with no agent named and no `--yes`, the command asks which agents and, when `--scope` is not given, which scope. Then it prints the plan and asks `Apply these changes? [y/N]`. Only `y` or `yes`, in any letter case, applies it. Ctrl+C at any of the three questions stops the command with exit code 1, and no change is made. Not verified in a real terminal. `--dry-run` asks only the agent and scope questions in a terminal, and it still changes nothing.
 - The plan lists each command and file change first, then one line for each agent. `--dry-run` prints the plan and changes nothing.
 - If any line in the plan is an error, nothing is applied, even with `--yes`.
 - `--scope` takes `global` (the default), `project` or `local`. `local` is for Claude Code only. Antigravity has `global` only. A named agent that lacks the scope stops the command with exit code 1.
@@ -167,11 +167,11 @@ The agents, the scopes and the file locations are in `docs/scopes.md`. The steps
 
 ### update [agent...]
 
-Runs again in each scope where the record lists an entry for the agent. For Codex, opencode and Antigravity, it rewrites the entry so that it starts the Node program and the command line program that run update. For Claude Code, it runs only `claude plugin update` (not verified: this command form) and writes no program path into Claude's configuration. In every case, the record keeps the path of the command line program, in each scope where no step failed. It takes `--scope` and `--dry-run`. It does not take `--yes`. When `--scope` is given, a named agent with no record in that scope gets a skipped line, and nothing runs for it. Without `--scope`, an agent with no record in any scope is left out, and when no agent has a record, the command prints `Nothing to update`.
+Runs again in each scope where the record lists an entry for the agent. For Codex, opencode and Antigravity, it rewrites the entry so that it starts the Node program and the command line program that run update. For Claude Code, it runs only `claude plugin update` (not verified: this command form) and writes no program path into Claude's configuration. In every case, the record keeps the path of the command line program, in each scope where no step failed. It takes `--scope` and `--dry-run`. It does not take `--yes`. Without `--scope`, it acts on the global scope, and on the project and local scopes of the current folder, where a record exists. A named agent with no record in a scope gets one skipped line for that scope, with or without `--scope`, and nothing runs for it. An agent that is not named and has no record is left out. When no agent has a record, the command prints `Nothing to update: no agent has a record in any scope.`, or the same line with `in the <scope> scope` when `--scope` is given. As install does, update stops before any change when a step in the plan is an error line.
 
 ### uninstall [agent...]
 
-Removes what install recorded, in the scopes that have a record. It takes `--scope` and `--dry-run`. It does not take `--yes`.
+Removes what install recorded. Without `--scope`, it acts on the global scope, and on the project and local scopes of the current folder, where a record exists. It takes `--scope` and `--dry-run`. It does not take `--yes`. As install does, it stops before any change when a step in the plan is an error line.
 
 It does not remove:
 
@@ -189,8 +189,8 @@ Checks, for each scope that has a record: the agent's own check, and that the co
 | --- | --- | --- |
 | 0 | The command succeeded. | Any command that prints its success line. `serve` returns 0 when the client closes stdin. An install, update or uninstall with no step that failed. A dry run with no error line. A plan that you answer no to. |
 | 1 | The command ran and failed. | A name that is not valid, such as `Work`. The name `all`. An unknown name for `default` or `remove`. A name that is already taken. A store or file error. Supabase rejects the token. No token is typed. Ctrl+C at the token prompt. Ctrl+C at a question during install (which agents, which scope, or apply), which prints `No answer could be read, so nothing was changed.` Not verified in a real terminal. An agent's step failed. An install plan has an error, so nothing was applied. An unknown agent name. A named agent that lacks the scope. `doctor` found a row that is an error. |
-| 2 | The command line is wrong. | A name that contains `sbp_` in any letter case, for `add`, `default`, `remove`, `install`, `update` and `uninstall`, and an unknown command. The tool treats that text as the shape of a token. A missing `--pat`. Piped input for `add`. A wrong number of arguments, or an unknown option. An unknown scope. `--yes` on `update` or `uninstall`. `install` with no terminal and no `--yes`. Any argument to `doctor`. |
-| 130 | Ctrl+C at any other time while an install, update or uninstall that is not a dry run is running. | The command prints the notice `Stopped by Ctrl+C. If a change had started, it may be partly made.` and stops. Not verified in a real terminal. |
+| 2 | The command line is wrong. | A name that contains `sbp_` in any letter case, for `add`, `default`, `remove`, `install`, `update` and `uninstall`, and an unknown command. The tool treats that text as the shape of a token. A missing `--pat`. Piped input for `add`. A wrong number of arguments, an unknown option, or a switch given twice. An unknown scope. `--yes` on `update` or `uninstall`. `install` with no terminal and no `--yes`. Any argument to `doctor`. |
+| 130 | Ctrl+C during an install, update or uninstall that is not a dry run, and not at a question. | The first Ctrl+C asks the command to stop. The stop is checked between real steps, so a command inside a step that has started still runs to its end, and no later step starts. If a step had started, the command prints `Stopped by Ctrl+C. The step that was running finished, and the steps after it did not run. Run multi-account-supabase-mcp uninstall --dry-run to see what is recorded.` If no step had started, it prints `Stopped by Ctrl+C before any step started, so nothing was changed.` Both go to stdout, and the exit code is 130. A second Ctrl+C exits at once with 130, and prints `Stopped by Ctrl+C. If a change had started, it may be partly made. Check the agent's own configuration, and run multi-account-supabase-mcp uninstall --dry-run to see what is recorded.` on stderr. Not verified in a real terminal. |
 
 Most errors go to stderr with the prefix `Error:`. Usage errors, unknown commands, refused command lines and the lock warning (the line that says a lock file could not be removed) do not have that prefix. The lock busy message does have it, as the accounts file section shows. Install, update, uninstall and doctor print their plans and their results on stdout, one line for each step, as `[ok] claude global: ...`, `[skipped] ...` or `[error] ...`. For example, a name that is not valid prints:
 
@@ -198,7 +198,7 @@ Most errors go to stderr with the prefix `Error:`. Usage errors, unknown command
 Error: Invalid account name "Work". Use 1-32 lowercase letters, digits or hyphens, starting with a letter or digit.
 ```
 
-A usage error prints `Usage error.` and then the usage text. Text that contains `sbp_` is never printed. For `add`, `default`, `remove`, `install`, `update` and `uninstall` with a name that has such text, and for an unknown command, the output is the note below, and the exit code is 2. For `add`, the --pat or terminal message is printed first when it applies. The commands `list`, `serve`, `help` and `doctor` take no name. With a token-shaped argument they print `Usage error.` and the usage text, with exit code 2, and not the note. The note below is printed for the commands named above:
+A usage error prints `Usage error.` and then the usage text. On a command line, text that contains `sbp_` in any letter case is refused. In installer output (plans, step lines and reasons), text shaped like a token, `sbp_` followed by letters, digits, underscores or hyphens, is shown as `[redacted]`. A bare `sbp_` with nothing after it is printed. For `add`, `default`, `remove`, `install`, `update` and `uninstall` with a name that has such text, and for an unknown command, the output is the note below, and the exit code is 2. For `add`, the --pat or terminal message is printed first when it applies. The commands `list`, `serve`, `help` and `doctor` take no name. With a token-shaped argument they print `Usage error.` and the usage text, with exit code 2, and not the note. The note below is printed for the commands named above:
 
 ```
 That input looks like a token, so it is not repeated.
@@ -253,7 +253,8 @@ A client that supports this notice updates its list. Another client may need a n
 
 - On Windows: `%LOCALAPPDATA%\multi-account-supabase-mcp\accounts.json`. If `LOCALAPPDATA` is not set, the folder is `AppData\Local` in your home folder.
 - On other systems: `$XDG_DATA_HOME/multi-account-supabase-mcp/accounts.json`. When `XDG_DATA_HOME` is not set, the file is `~/.local/share/multi-account-supabase-mcp/accounts.json`.
-- If `MULTI_ACCOUNT_SUPABASE_HOME` is set to a folder, that folder is used instead, and the file is `accounts.json` inside it.
+- If `MULTI_ACCOUNT_SUPABASE_HOME` is set to a folder, that folder is used instead, and the file is `accounts.json` inside it. The installer, `update` and `doctor` read this variable from their own environment, so they use the folder it names.
+- The entries that install writes do not set this variable, and the tool does not write it into agent configuration. The installed server reads the default accounts file, unless the variable is set in the environment that the agent gives the server (ASSUMED, not verified: how each agent passes its environment). If the variable is set only for the installer, or in a shell that does not start the agent, the server reads the default file, and if that file has no accounts it refuses calls with the setup text (ASSUMED, not verified: how each agent passes its environment). See "The server does not find the accounts file" in `docs/troubleshooting.md`.
 
 The rules for other systems are tested with fake values. They have not been run on macOS or Linux.
 
@@ -286,7 +287,7 @@ Changes are made under a lock:
 
 The installers keep one record file for each agent, in the `state` folder of the data folder: `claude.json`, `codex.json`, `opencode.json` and `antigravity.json`. The data folder is the same folder as the accounts file. Each record lists what this tool wrote for each scope: the entries, the tables, the files, the folders it made, the backups it kept, the Claude Code marketplace, and the command line program path. A record holds no token.
 
-- A record that cannot be read stops the install before anything changes. The error names the file and the reason only.
+- A record that cannot be read stops install, update and uninstall before anything changes. The error names the file and the reason only.
 - The records are written under a lock file of their own, `<record file>.lock`.
 
 ## Limits
@@ -297,7 +298,7 @@ The installers keep one record file for each agent, in the `state` folder of the
 - A read-only query tool is in the code, but it is switched off. It is not listed, and a call to it is refused as an unknown tool when at least one account exists. It stays off until a separate check is done.
 - The official server runs destructive SQL, and `apply_migration`, without a confirmation step, in the build this tool uses. This tool adds no confirmation step of its own. This was read in the official build. It was not checked with a live call.
 - Every official child starts with all nine feature groups: `docs`, `account`, `database`, `debugging`, `development`, `functions`, `branching`, `storage` and `notebooks`. The official defaults leave out `storage` and `notebooks`.
-- On Windows, each child process receives eight system names that the Windows process start adds when the child's environment does not have them. None of them is a credential. See `SECURITY.md`.
+- On Windows, each child process receives eight system names that the Windows process start adds when the child's environment does not have them (not verified: the names reaching the child in a live run were not checked; the list is in a code comment, and no test checks it). None of them is a credential. See `SECURITY.md`.
 - The token of an account is in the environment of its child process while that process runs. See `SECURITY.md`.
 - The installers run the agents' own commands: `claude`, `codex` and `agy`. Those commands get the whole environment of the installer. What they do is not verified here. See `SECURITY.md`.
 - The installers have no tests against a real agent. The tests use fake command results and temporary folders.
