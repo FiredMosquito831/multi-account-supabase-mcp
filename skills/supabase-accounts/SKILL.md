@@ -23,7 +23,7 @@ This tool gives access to one or more Supabase accounts. Each account has its ow
 
 - The owner types a token in a terminal window of their own. The token is never sent in the chat.
 - Never ask the owner for a token in the chat. If a token appears in a message, do not repeat it.
-- To add an account, give the owner this command and ask them to run it in a terminal: `multi-account-supabase-mcp add <name> --pat`
+- To add an account, give the owner this command and ask them to run it in a terminal: `npx -y multi-account-supabase-mcp@0.1.0 add <name> --pat`
 
 ## Accounts and search
 

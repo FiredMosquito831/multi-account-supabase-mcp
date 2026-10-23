@@ -126,6 +126,23 @@ test("remove-account.md says the Supabase token still works until it is revoked"
   assert.match(readCommand("remove-account"), /Supabase token still works until [^.]*revoke/);
 });
 
+test("remove-account.md says the CLI asks in the terminal before it removes, and needs --yes without a terminal", () => {
+  const text = readCommand("remove-account");
+  assert.ok(
+    text.includes("The CLI asks in the terminal before it removes the account, and the owner types y there."),
+    "remove-account.md says the CLI asks in the terminal, and the owner types y",
+  );
+  assert.ok(
+    text.includes("Without a terminal, the command needs `--yes` after the name."),
+    "remove-account.md says --yes is needed without a terminal",
+  );
+  assert.equal(
+    text.includes("does not ask for a confirmation"),
+    false,
+    "remove-account.md no longer says the CLI removes at once without asking",
+  );
+});
+
 test("add-account.md names the --pat option", () => {
   assert.ok(readCommand("add-account").includes("--pat"));
 });

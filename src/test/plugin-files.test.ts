@@ -32,3 +32,20 @@ test("the plugin skill frontmatter name is SKILL_NAME", () => {
   const name = /^name:\s*(.+?)\s*$/m.exec(frontmatter[1]);
   assert.equal(name?.[1], SKILL_NAME);
 });
+
+test("every multi-account-supabase-mcp@ version in the skill is the plugin version, and the skill gives the npx add line", () => {
+  const pluginVersion = (JSON.parse(readFileSync(join(root, PLUGIN_DIR, ".claude-plugin", "plugin.json"), "utf8")) as {
+    version: string;
+  }).version;
+  for (const file of [ROOT_SKILL, PLUGIN_SKILL]) {
+    const text = readFileSync(join(root, file), "utf8");
+    assert.ok(
+      text.includes(`npx -y multi-account-supabase-mcp@${pluginVersion} add <name> --pat`),
+      `${file} gives the npx add line with the plugin version`,
+    );
+    assert.doesNotMatch(text, /multi-account-supabase-mcp add /, `${file} has no bare add line`);
+    for (const match of text.matchAll(/multi-account-supabase-mcp@([^\s`'"]*)/g)) {
+      assert.equal(match[1], pluginVersion, `${file} names the plugin version`);
+    }
+  }
+});

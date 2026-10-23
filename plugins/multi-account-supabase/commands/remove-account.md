@@ -8,6 +8,6 @@ Only after the owner confirms that exact name, give them this line to run in a t
 
 npx -y multi-account-supabase-mcp@0.1.0 remove <name>
 
-The command does not ask for a confirmation of its own. It removes the account at once, so the confirmation in this chat is the only check.
+The CLI asks in the terminal before it removes the account, and the owner types y there. Without a terminal, the command needs `--yes` after the name.
 
 Say that the Supabase token still works until the owner revokes it in the Supabase dashboard. Do not run the line yourself.
