@@ -44,6 +44,11 @@ This project follows the format of [Keep a Changelog](https://keepachangelog.com
 - The Codex skill file `supabase-accounts`, in the global and project scopes. Its location is ASSUMED, not verified; see `docs/install.md`.
 - Ctrl+C at an install question (which agents, which scope, or apply) exits with code 1, and changes nothing. Ctrl+C at any other time during an install, update or uninstall that is not a dry run exits with code 130 and prints a notice (not verified in a real terminal).
 - The guides `docs/install.md`, `docs/scopes.md` and `docs/troubleshooting.md`.
+- The Claude Code plugin `multi-account-supabase`, in the marketplace `multi-account-supabase-mcp` in this repository. Its server key is `supabase`. Claude Code has not been run with it (not verified).
+- Five plugin commands (not verified: Claude Code was not run): `accounts` and `doctor` run the launcher with one fixed word, and `add-account`, `set-default` and `remove-account` give a terminal line for you to run.
+- The launcher runs the installed command when it is on PATH, and otherwise `npx` with the plugin's version (ASSUMED, not verified: npx was not run). It accepts plain words only.
+- A copy of the `supabase-accounts` skill in the plugin.
+- A test checks that the plugin, the package and the marketplace have the same version.
 
 ### Security
 
@@ -56,3 +61,5 @@ This project follows the format of [Keep a Changelog](https://keepachangelog.com
 - A Windows `.cmd` or `.bat` shim does not run from a folder that holds a node program, or from a folder that cannot be read.
 - The installers' agent commands get the whole environment of the installer, not the allowlist. `SECURITY.md` says so.
 - For Codex and opencode, an edited entry or table is never removed or replaced. An entry is edited when its arguments are not the recorded command line program path followed by `serve`, when its command is not an absolute path, when it has an env key (Codex) or an environment or env key (opencode) whose value is not empty, or, for opencode, when its type or enabled flag differs (ASSUMED, not verified: the real CLI layout is not run). Install, update and uninstall leave it in place, and the step is an error.
+- The plugin's command files take no argument from you. Only the `accounts` and `doctor` lines run a command, each with one fixed word.
+- The launcher refuses an argument that is not a plain word with exit code 2, before anything runs. It does not print the refused argument.

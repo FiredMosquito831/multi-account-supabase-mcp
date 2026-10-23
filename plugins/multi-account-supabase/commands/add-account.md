@@ -10,8 +10,8 @@ Explain these steps to the owner, in plain words:
 
    npx -y multi-account-supabase-mcp@0.1.0 add <name> --pat
 
-4. The command asks for the token. The typing is hidden. Enter the token there, then press Enter.
+4. The command asks for the token. The typing is hidden (not verified: the hidden input has not been checked in a real terminal). Enter the token there, then press Enter.
 
-The token is typed in that terminal, hidden, and never in this chat. Do not ask the owner for a token, and do not read one.
+The token is typed in that terminal, hidden (not verified: the hidden input has not been checked in a real terminal), and never in this chat. Do not ask the owner for a token, and do not read one.
 
 If the owner pastes a token into this chat anyway, do not use it and do not repeat it. Tell the owner to revoke that token in the Supabase dashboard, and to add the account again in a terminal window.

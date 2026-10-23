@@ -6,7 +6,7 @@ multi-account-supabase-mcp is a local MCP server. It wraps the official Supabase
 
 - The core and the command-line tool work. They are tested offline.
 - The installers are built and tested offline for four agents: Claude Code, Codex, opencode and Antigravity. They are tested with fake command results and temporary folders, and not against a real agent. See the install, update, uninstall and doctor commands under "Commands".
-- The Claude Code plugin is not built yet. The Claude Code install step needs a marketplace that is not published yet (not verified: checked on 2026-10-20 only).
+- The Claude Code plugin is in this repository, in `plugins/multi-account-supabase`. It is tested offline. It has not been run in Claude Code (not verified). See "Claude Code plugin" below.
 - The package is not published.
 - It needs Node 22 or newer. See `engines` in `package.json`.
 
@@ -43,7 +43,7 @@ The examples below use the command `multi-account-supabase-mcp`. Until the packa
 
 ### add <name> --pat
 
-Adds an account. `--pat` means personal access token, and it is the only kind of account for now. Run the command in a Windows console window or another terminal. The token is typed there with hidden input.
+Adds an account. `--pat` means personal access token, and it is the only kind of account for now. Run the command in a Windows console window or another terminal. The token is typed there with hidden input (not verified: the hidden input has not been checked in a real terminal).
 
 ```
 multi-account-supabase-mcp add work --pat
@@ -55,7 +55,7 @@ The command shows this prompt on stderr, and then waits for the token:
 Token (input is hidden, press Enter when done):
 ```
 
-Type the token and press Enter. Nothing you type is shown. On success the command prints one line:
+Type the token and press Enter. Nothing you type is shown (not verified: the hidden input has not been checked in a real terminal). On success the command prints one line:
 
 ```
 Added "work" (you@example.com).
@@ -110,6 +110,8 @@ Removes the account record and the token stored for it on this machine. In a ter
 Removed "side".
 The Supabase token still works until you revoke it in your Supabase account settings.
 ```
+
+The last line is printed by the command. Not verified against Supabase: that the token still works until it is revoked.
 
 This command does not revoke the token at Supabase. See "Removing an account" below.
 
@@ -182,6 +184,63 @@ It does not remove:
 ### doctor
 
 Checks, for each scope that has a record: the agent's own check, and that the command line program recorded at install still exists. It also checks that each account has a token in the credential store. It reads only whether a token is present, and never prints it. `doctor` takes no option. Any argument is a usage error.
+
+## Claude Code plugin
+
+The repository holds a Claude Code plugin, `multi-account-supabase`, in `plugins/multi-account-supabase`. Its marketplace is `multi-account-supabase-mcp`, in this repository (`.claude-plugin/marketplace.json`). The plugin's files are tested offline by `npm test`. Claude Code has not been run with the plugin (not verified).
+
+### What the plugin starts
+
+The plugin's server key is `supabase`. Claude Code is expected to name the tools `plugin:multi-account-supabase:supabase` (not verified: Claude Code was not run). The Codex, opencode and Antigravity entries that the installer writes use the key `multi-account-supabase` (`src/agents/scopes.ts`, lines 12 to 16). The two keys differ (`src/test/scopes.test.ts`, lines 104 to 105), so both can be installed side by side (ASSUMED, not verified: no agent was run with both).
+
+The plugin has five slash commands. Claude Code is expected to name them `/multi-account-supabase:<command>` (ASSUMED, not verified: Claude Code was not run).
+
+| Command | What it does |
+| --- | --- |
+| `accounts` | Runs `list` through the launcher and shows the accounts. No token value is shown. |
+| `doctor` | Runs `doctor` through the launcher and explains each line. No token value is shown. |
+| `add-account` | Explains the steps, and gives a terminal line: `npx -y multi-account-supabase-mcp@0.1.0 add <name> --pat`. You type the token in that terminal, with hidden input (not verified: the hidden input has not been checked in a real terminal). The token is never typed in the chat. |
+| `set-default` | Gives a terminal line: `npx -y multi-account-supabase-mcp@0.1.0 default <name>`. |
+| `remove-account` | After you confirm the name in the chat, gives a terminal line: `npx -y multi-account-supabase-mcp@0.1.0 remove <name>`. |
+
+- `accounts` and `doctor` each run one command, with one fixed word. The other three give a terminal line for you to run. No command passes a name through a shell (`plugins/multi-account-supabase/commands/`).
+- Each terminal line names the plugin version, `0.1.0`, so the same version runs. The package is not published (checked on 2026-10-20 only), so these lines fail until it is (ASSUMED, not verified: npx was not run).
+- `remove` asks in the terminal before it removes anything. Only `y` or `yes` removes the account. Without a terminal it needs `--yes` after the name (`src/run.ts`, `removeCommand`). The Supabase token still works until you revoke it in your Supabase account settings (not verified against Supabase).
+
+### Install routes
+
+- Installer route: `multi-account-supabase-mcp install claude` runs the `claude plugin` commands for one scope: global, unless `--scope` names another. See `install [agent...]`, above. Not verified against a real Claude Code.
+- Manual route: in Claude Code, run `/plugin marketplace add FiredMosquito831/multi-account-supabase-mcp`, then `/plugin install multi-account-supabase@multi-account-supabase-mcp` (not verified: the Claude Code interface was not run). `docs/install.md` has the same steps.
+- The installer's `update`, `uninstall` and `doctor` act only on what the tool recorded, so they do not act on a plugin added by hand (`src/agents/claude.ts`, lines 191, 227 and 298). The installer's `install` does not check for a plugin added by hand. It runs `claude plugin install` (`src/agents/claude.ts`, line 158). What `claude plugin install` does with a plugin that is already installed is not verified.
+
+### Marketplace and manifest
+
+- The marketplace declares no command, hook or server. Its one plugin entry is the only entry (`.claude-plugin/marketplace.json`; `src/test/plugin-manifest.test.ts`). Whether the installer's `-y` flag then accepts nothing is not verified (see `SECURITY.md`, section 7).
+- The marketplace add commands name no branch and no release (`src/agents/claude.ts`, line 132). Claude Code is expected to read the default branch (ASSUMED, not verified). Whether Claude Code accepts a release ref is OPEN.
+- The plugin entry sets `strict` to `false`. Its meaning in Claude Code is ASSUMED, not verified.
+- The plugin, the package and the marketplace have the same version, `0.1.0`. A test checks it (`src/test/plugin-manifest.test.ts`).
+
+### The launcher
+
+The plugin's server entry runs `bin/launch.mjs` with `node` and no argument. With no argument, the launcher starts `serve` (`plugins/multi-account-supabase/.mcp.json`; `bin/launch.mjs`, line 91).
+
+- If `multi-account-supabase-mcp` is on PATH, the launcher runs it. It does not compare that copy's version with the plugin's version (`bin/launch.mjs`, lines 100 to 103).
+- Otherwise it runs `npx -y multi-account-supabase-mcp@<plugin version>` (`bin/launch.mjs`, lines 47 to 51 and 110 to 118).
+- The launcher accepts plain words only: letters, digits, and the characters `._@:=,/\+-`. Any other argument stops it with exit code 2, before anything runs. It does not print the refused argument (`bin/launch.mjs`, lines 18 to 21 and 93 to 98).
+- On Windows, the launcher first checks that `npx` is on PATH. If it is not, it prints one line and exits with code 1 (`bin/launch.mjs`, lines 104 to 109).
+- The launcher writes its own messages to stderr only. In serve mode, stdout carries the MCP protocol (`bin/launch.mjs`, lines 8 to 9).
+- The launcher forwards SIGINT and SIGTERM to the server (`bin/launch.mjs`, lines 136 to 144). On Windows, a stop signal reaches `cmd.exe` and not the server, so the server may not close its account processes there (ASSUMED, not verified: check on Windows, OPEN).
+
+### The skill
+
+The plugin carries one skill, `supabase-accounts`. Its file is a byte copy of `skills/supabase-accounts/SKILL.md` at the root. A test checks that the two files are the same (`src/test/plugin-files.test.ts`).
+
+### Not verified
+
+- The Claude Code interface, the command names, the tool ids and the manual install route. None was run.
+- The installer's `claude plugin` commands against a real Claude Code. See the installer route above.
+- The dashboard steps for creating a token with scopes are OPEN. They are read again before a release.
+- The repository `FiredMosquito831/multi-account-supabase-mcp` and the package `multi-account-supabase-mcp` do not exist on GitHub or npm yet (checked on 2026-10-20 only).
 
 ## Exit codes
 

@@ -12,7 +12,7 @@ This guide shows how to add the server to each agent with the install commands. 
 
 ## What an agent's entry starts
 
-For Codex, opencode and Antigravity, the entry starts the server with the Node program that ran the command, the command line program of this package, and the word `serve`. For example, `node <path to dist/cli.js> serve`. The entry holds no token. The token of each account stays in the credential store, and the server reads it from there. Claude Code gets the server from its plugin, and the plugin is not built yet (see the Claude Code section).
+For Codex, opencode and Antigravity, the entry starts the server with the Node program that ran the command, the command line program of this package, and the word `serve`. For example, `node <path to dist/cli.js> serve`. The entry holds no token. The token of each account stays in the credential store, and the server reads it from there. Claude Code gets the server from its plugin. The plugin is in this repository, and it is not published yet (checked on 2026-10-20 only; see the Claude Code section).
 
 The record keeps the path of the command line program that ran the install. If that program moves, run `update` from its new location. `doctor` checks that the recorded command line program still exists. It does not check the Node program.
 
@@ -47,6 +47,8 @@ multi-account-supabase-mcp install --yes
 
 Scopes: global, project and local.
 
+This part describes the installer route. The manual route, which adds the plugin inside Claude Code, is at the end of this part.
+
 Requirement: the `claude` command must be on PATH. The check runs in a dry run too.
 
 What install runs, for the scope (not verified: these command forms):
@@ -58,7 +60,7 @@ The `-y` flag makes the plugin install run without a prompt (not verified). Not 
 
 The global scope passes `--scope user`. The project and local scopes run the commands in the project folder.
 
-Not verified: the marketplace repository. It has not been created, so the marketplace add is expected to fail until it exists. The Claude Code plugin is not built yet. Until both exist, the Claude Code step fails. Not verified: how the claude command responds to these commands. The install has not been run against a real Claude Code.
+Not verified: the marketplace repository. It has not been created (checked on 2026-10-20 only), so the marketplace add is expected to fail until it exists. The plugin files are in this repository. Until the repository exists, the Claude Code step fails. Not verified: how the claude command responds to these commands. The install has not been run against a real Claude Code.
 
 Install does not check for an existing plugin with this name, so it does not refuse one. Not verified: the Claude Code listing does not show a scope that this tool can verify. See `SECURITY.md`, section 7.
 
@@ -75,6 +77,23 @@ Run that command only when no other plugin uses the marketplace.
 When claude's failed output has a line that says "not installed" and names the plugin id, uninstall treats the plugin as absent and clears the record (ASSUMED, not verified: that wording). Any other failure keeps the record, so a later uninstall can try again.
 
 Doctor runs `claude plugin list --json` (not verified: this command form) and looks for the plugin id `multi-account-supabase@multi-account-supabase-mcp` as a whole word. Not verified: the listing format. The listing has no scope field that is verified, so doctor says the scope is not confirmed.
+
+### Plugin route, by hand
+
+Use this route to add the plugin inside Claude Code. The installer does not use it. The installer's `update`, `uninstall` and `doctor` act only on what the tool recorded, so they do not act on a plugin added this way (`src/agents/claude.ts`, lines 191, 227 and 298). The installer's `install` does not check for a plugin added this way. It runs `claude plugin install` (`src/agents/claude.ts`, line 158). What `claude plugin install` does with a plugin that is already installed is not verified.
+
+In Claude Code, run these two commands (not verified: the Claude Code interface was not run):
+
+```
+/plugin marketplace add FiredMosquito831/multi-account-supabase-mcp
+/plugin install multi-account-supabase@multi-account-supabase-mcp
+```
+
+- The marketplace repository must exist first. It has not been created (checked on 2026-10-20 only).
+- The marketplace add names no branch and no release. Claude Code is expected to read the default branch (ASSUMED, not verified). Whether Claude Code accepts a release ref is OPEN.
+- The plugin's server key is `supabase`, so its tools are expected to read `plugin:multi-account-supabase:supabase` (not verified).
+- The server starts through the launcher. It runs the installed command when that is on PATH, and otherwise `npx` with the plugin's version. The package is not published (checked on 2026-10-20 only). See "Claude Code plugin" in `README.md`.
+- Add an account in a terminal window of your own, with `multi-account-supabase-mcp add <name> --pat`, as in `README.md`.
 
 ## Codex (`codex`)
 
