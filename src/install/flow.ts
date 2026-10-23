@@ -45,8 +45,12 @@ const NOTHING_CHANGED = "Nothing was changed.";
 const DRY_RUN_DONE = "Dry run: nothing was changed.";
 const NO_RECORD = "no record in this scope, so nothing was changed.";
 const PLAN_ERROR = "The plan has an error, so nothing was changed. Fix the problem and run the command again.";
-const STOPPED_NOTICE =
+// The notice after a stop that came once a step had started. The step in progress finished, and the steps after it did not run.
+const STOPPED_AFTER_STEP =
   "Stopped by Ctrl+C. The step that was running finished, and the steps after it did not run. Run multi-account-supabase-mcp uninstall --dry-run to see what is recorded.";
+// The notice after a stop that came before any step started. Nothing was changed.
+const STOPPED_BEFORE_STEP = "Stopped by Ctrl+C before any step started, so nothing was changed.";
+const noticeOf = (stop: StopState): string => (stop.started ? STOPPED_AFTER_STEP : STOPPED_BEFORE_STEP);
 
 // The inputs of one command. Agents are named by id. Undefined or an empty list means every agent. The scope is as the command
 // line wrote it. Install uses the global scope when none is given. Update and uninstall act in every scope when none is given.
@@ -59,7 +63,7 @@ export interface FlowOptions {
 
 // What the commands read and write. Production builds this from the process. A test passes fakes. The run, present and fs fields
 // are the command runner, the program check and the file functions. When they are left out, the real ones are used. The
-// interrupted check says whether a stop was requested. When it is left out, the stop requested through requestStop is used.
+// interrupted check says whether a stop was requested. When it is left out, requestStop asks the run in progress to stop.
 export interface FlowIo {
   isTerminal: boolean;
   ask: (question: string) => Promise<string>;
@@ -77,19 +81,26 @@ export interface FlowIo {
   interrupted?: () => boolean;
 }
 
-// The stop request of the command line. The first Ctrl+C sets it, and a real change checks it before each step.
-let stopRequested = false;
+// The state of one run. Each run makes its own, so a stop asked for in one run cannot reach the next run.
+interface StopState {
+  requested: boolean;
+  started: boolean;
+}
 
+// The run in progress, if there is one. A Ctrl+C reaches only this run. Between runs there is none, so a Ctrl+C reaches nothing.
+let activeStop: StopState | undefined;
+
+// Asks the run in progress to stop before its next step. The command line calls this on the first Ctrl+C.
 export const requestStop = (): void => {
-  stopRequested = true;
+  if (activeStop !== undefined) {
+    activeStop.requested = true;
+  }
 };
 
-// Clears the stop request. The command line never needs this; the tests use it so that one test's request does not reach the next.
-export const clearStopRequest = (): void => {
-  stopRequested = false;
-};
+// The io of one run: the caller's io, with its output redacted, and the run's own stop state.
+type Run = FlowIo & { stop: StopState };
 
-const stopping = (io: FlowIo): boolean => (io.interrupted ?? (() => stopRequested))();
+const stopping = (io: Run): boolean => (io.interrupted ?? (() => io.stop.requested))();
 
 // One line of output: the outcome of a step, or of one doctor check. The label names the agent and the scope, or the account.
 interface Row {
@@ -123,13 +134,13 @@ const rowOf = (step: Step): Row => ({
   message: step.message,
 });
 
-// The shape of a Supabase access token. A token is never printed, so any text of this shape in a step line is shown as [redacted].
-const TOKEN_SHAPE = /sbp_[A-Za-z0-9_-]+/g;
+// The shape of a Supabase access token, in any letter case. A token is never printed. Every line the flow prints goes through the
+// output of runCommand, which shows each text of this shape as [redacted].
+const TOKEN_SHAPE = /sbp_[A-Za-z0-9_-]+/gi;
 
-// Prints each row on one line. The whole line is checked for a token shape before it is printed.
 const printRows = (io: FlowIo, rows: readonly Row[]): void => {
   for (const row of rows) {
-    io.out(`[${row.status}] ${row.label}: ${row.message}`.replace(TOKEN_SHAPE, "[redacted]"));
+    io.out(`[${row.status}] ${row.label}: ${row.message}`);
   }
 };
 
@@ -196,7 +207,7 @@ const contextFor = (io: FlowIo, dryRun: boolean): Context =>
 
 // Wraps an adapter's changes so that a change does not start once a stop has been requested. The step in progress is not
 // interrupted, because the wrapper checks only before a step starts.
-const untilStopped = (adapter: AgentAdapter, io: FlowIo, state: { stopped: boolean }): AgentAdapter => {
+const untilStopped = (adapter: AgentAdapter, io: Run, state: { stopped: boolean }): AgentAdapter => {
   const gate =
     (change: (ctx: Context, scope: Scope) => Promise<Step[]>) =>
     async (ctx: Context, scope: Scope): Promise<Step[]> => {
@@ -204,6 +215,7 @@ const untilStopped = (adapter: AgentAdapter, io: FlowIo, state: { stopped: boole
         state.stopped = true;
         return [];
       }
+      io.stop.started = true;
       return change(ctx, scope);
     };
   return {
@@ -217,7 +229,7 @@ const untilStopped = (adapter: AgentAdapter, io: FlowIo, state: { stopped: boole
 // One pass of the planner over one scope. The planner refuses the whole plan before any agent is called, and it throws that. A
 // dry pass changes nothing, so only a real pass checks for a stop.
 const planPass = async (
-  io: FlowIo,
+  io: Run,
   action: Action,
   scope: string,
   agents: readonly string[] | undefined,
@@ -248,6 +260,21 @@ const guarded = async (io: FlowIo, command: () => Promise<number>): Promise<numb
     }
     io.out(`The command stopped before it finished: ${reasonOf(error)}`);
     return 1;
+  }
+};
+
+// Runs one command with its own stop state, and with its output redacted. The stop state is the run in progress until the command
+// ends, so a Ctrl+C reaches only this command.
+const runCommand = async (io: FlowIo, command: (run: Run) => Promise<number>): Promise<number> => {
+  const stop: StopState = { requested: false, started: false };
+  const run: Run = { ...io, out: (line) => io.out(line.replace(TOKEN_SHAPE, "[redacted]")), stop };
+  activeStop = stop;
+  try {
+    return await guarded(run, () => command(run));
+  } finally {
+    if (activeStop === stop) {
+      activeStop = undefined;
+    }
   }
 };
 
@@ -342,7 +369,7 @@ const askInstallChoices = async (
 // Install. The command line path is checked first. The dry pass shows the plan. Then the flow stops for a dry run, refuses without
 // a terminal and without --yes, or asks to apply in a terminal. The real pass records the command line path for each agent whose
 // step succeeded, in each scope where no step failed.
-const installCommand = async (options: FlowOptions, io: FlowIo): Promise<number> => {
+const installCommand = async (options: FlowOptions, io: Run): Promise<number> => {
   const problem = cliPathProblem(io.cliPath);
   if (problem !== undefined) {
     io.out(problem);
@@ -401,14 +428,14 @@ const installCommand = async (options: FlowOptions, io: FlowIo): Promise<number>
   io.out("Results:");
   printRows(io, rows);
   if (real.stopped) {
-    io.out(STOPPED_NOTICE);
+    io.out(noticeOf(io.stop));
     return 130;
   }
   return hasError(rows) ? 1 : 0;
 };
 
 export const install = (options: FlowOptions, io: FlowIo): Promise<number> =>
-  guarded(io, () => installCommand(options, io));
+  runCommand(io, (run) => installCommand(options, run));
 
 // The agents that act in one scope. A named agent that lacks a named scope is passed on, so the planner refuses the whole command. Any
 // other agent that lacks the scope gets one skipped line with the reason, named or not. A named agent that has the scope but no
@@ -454,7 +481,7 @@ const targetOf = async (
 
 // Update and uninstall share one shape. Each refuses --yes, shows the plan, stops there for a dry run, and otherwise runs. Only
 // update records the command line path again, after each successful step.
-const runChange = async (action: "update" | "uninstall", options: FlowOptions, io: FlowIo): Promise<number> => {
+const runChange = async (action: "update" | "uninstall", options: FlowOptions, io: Run): Promise<number> => {
   if (options.yes === true) {
     io.out(`${action} does not take --yes, so nothing was changed.`);
     return 2;
@@ -527,17 +554,17 @@ const runChange = async (action: "update" | "uninstall", options: FlowOptions, i
     rows.push(...stepRows, ...recordRows);
   }
   if (stopped) {
-    io.out(STOPPED_NOTICE);
+    io.out(noticeOf(io.stop));
     return 130;
   }
   return hasError(rows) ? 1 : 0;
 };
 
 export const update = (options: FlowOptions, io: FlowIo): Promise<number> =>
-  guarded(io, () => runChange("update", options, io));
+  runCommand(io, (run) => runChange("update", options, run));
 
 export const uninstall = (options: FlowOptions, io: FlowIo): Promise<number> =>
-  guarded(io, () => runChange("uninstall", options, io));
+  runCommand(io, (run) => runChange("uninstall", options, run));
 
 // The name of a scope in a doctor row. A project or local scope names its folder, so two folders give two labels.
 const scopeLabel = (key: string): string => {
@@ -632,4 +659,4 @@ const doctorCommand = async (io: FlowIo): Promise<number> => {
   return hasError(rows) ? 1 : 0;
 };
 
-export const doctor = (io: FlowIo): Promise<number> => guarded(io, () => doctorCommand(io));
+export const doctor = (io: FlowIo): Promise<number> => runCommand(io, (run) => doctorCommand(run));

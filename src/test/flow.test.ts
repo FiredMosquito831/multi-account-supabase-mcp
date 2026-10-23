@@ -7,7 +7,7 @@ import type { Runner } from "../agents/command.js";
 import type { Scope } from "../agents/scopes.js";
 import { type AgentId, type Item, record, recordedItems, scopeKey, statePath } from "../agents/state.js";
 import { type AgentAdapter, type Context, type Step } from "../agents/types.js";
-import { type FlowIo, doctor, install, uninstall, update } from "../install/flow.js";
+import { type FlowIo, doctor, install, requestStop, uninstall, update } from "../install/flow.js";
 import { MemoryTokenStore, type TokenStore } from "../secrets/token-store.js";
 import { assertIsolated, inTemporaryRoot } from "./isolation.js";
 
@@ -754,6 +754,86 @@ test("the install flow writes its records to the data folder in the environment 
     assert.deepEqual(await recordedItems("claude", scopeKey("global", io.projectDir), undefined, io.env), [serverOf(io)]);
     assert.equal(existsSync(path.join(given, "state", "claude.json")), true);
     assert.deepEqual(await recordedItems("claude", scopeKey("global", io.projectDir)), []);
+  }));
+
+test("an uppercase SBP_ token in a step line is redacted, and a line with no token is unchanged", () =>
+  inRoot(async (root) => {
+    const broken: AgentAdapter = {
+      ...fakeAgent("claude", ["global"], []),
+      install: async () => {
+        throw new Error("failed with SBP_TEST-ONLY-VALUE");
+      },
+    };
+    const { io, lines } = harness(root, [broken, fakeAgent("codex", ["global"], [], { throws: true })]);
+    assert.equal(await install({ agents: ["claude", "codex"], yes: true }, io), 1);
+    assert.equal(lines.includes("[error] claude global: failed with [redacted]"), true);
+    assert.equal(lines.includes("[error] codex global: boom"), true);
+    assert.equal(
+      lines.some((line) => /sbp_/i.test(line)),
+      false,
+    );
+  }));
+
+test("a token-shaped string in a plan row's path is redacted", () =>
+  inRoot(async (root) => {
+    const target = path.join(root, "sbp_TEST-ONLY-VALUE", "would-write.txt");
+    const { io, lines } = harness(root, [fakeAgent("claude", ["global"], [], { writes: target })]);
+    assert.equal(await install({ agents: ["claude"], dryRun: true }, io), 0);
+    assert.equal(
+      lines.some((line) => line.includes("write ") && line.includes("[redacted]")),
+      true,
+    );
+    assert.equal(
+      lines.some((line) => /sbp_/i.test(line)),
+      false,
+    );
+  }));
+
+test("a token-shaped string in an error reason is redacted", () =>
+  inRoot(async (root) => {
+    const broken = fakeAgent("claude", ["global"], []);
+    Object.defineProperty(broken, "scopes", {
+      get: () => {
+        throw new Error("scopes unreadable sbp_TEST-ONLY-VALUE");
+      },
+    });
+    const { io, lines } = harness(root, [broken]);
+    assert.equal(await install({ agents: ["claude"], yes: true }, io), 1);
+    assert.equal(lines.includes("The command stopped before it finished: scopes unreadable [redacted]"), true);
+    assert.equal(
+      lines.some((line) => /sbp_/i.test(line)),
+      false,
+    );
+  }));
+
+test("a second run in the same process is not stopped by the Ctrl+C of an earlier run, and exits by its own result", () =>
+  inRoot(async (root) => {
+    const first = fakeAgent("claude", ["global"], []);
+    const finishing = first.install;
+    first.install = async (ctx, scope) => {
+      const steps = await finishing(ctx, scope);
+      if (!ctx.dryRun) {
+        requestStop();
+      }
+      return steps;
+    };
+    const stopped = harness(root, [first, fakeAgent("codex", ["global"], [])]);
+    assert.equal(await install({ agents: ["claude", "codex"], yes: true }, stopped.io), 130);
+    const calls: string[] = [];
+    const second = harness(root, [fakeAgent("claude", ["global"], calls), fakeAgent("codex", ["global"], calls)]);
+    assert.equal(await install({ agents: ["claude", "codex"], yes: true }, second.io), 0);
+    assert.equal(calls.includes("install claude global real"), true);
+    assert.equal(calls.includes("install codex global real"), true);
+  }));
+
+test("a stop that comes before any step prints the before-any-step notice, and changes nothing", () =>
+  inRoot(async (root) => {
+    const calls: string[] = [];
+    const { io, lines } = harness(root, [fakeAgent("claude", ["global"], calls)]);
+    io.interrupted = () => true;
+    assert.equal(await install({ agents: ["claude"], yes: true }, io), 130);
+    assert.equal(calls.includes("install claude global real"), false);
+    assert.equal(lines.includes("Stopped by Ctrl+C before any step started, so nothing was changed."), true);
   }));
 
 test("doctor with an adapter that throws still prints the other steps, and exits 1", () =>

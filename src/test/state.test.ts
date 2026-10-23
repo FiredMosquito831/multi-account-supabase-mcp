@@ -221,6 +221,16 @@ test("a state write and read with a data folder in the environment given to them
     await assert.rejects(stat(statePath("claude")), { code: "ENOENT" });
   }));
 
+// The message for an environment that names no data folder.
+const NO_DATA_FOLDER = "The environment names no data folder, so nothing was read or changed.";
+
+test("a state call given an environment that names no data folder is refused, and never falls back to the process environment", () =>
+  inDataFolder(async () => {
+    await assert.rejects(record("claude", "global", entry, undefined, {}), { message: NO_DATA_FOLDER });
+    await assert.rejects(recordedItems("claude", "global", undefined, {}), { message: NO_DATA_FOLDER });
+    await assert.rejects(stat(statePath("claude")), { code: "ENOENT" });
+  }));
+
 test("recordedScopeKeys lists the scopes that hold an item, and none before anything is recorded", () =>
   inDataFolder(async (dataDir) => {
     const projectKey = scopeKey("project", path.join(dataDir, "project"));

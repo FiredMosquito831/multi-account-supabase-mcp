@@ -92,11 +92,29 @@ const assertScopeKey = (key: string): void => {
   }
 };
 
+// The message for an environment that names no data folder. The state is not read or changed in that case.
+const NO_DATA_FOLDER = "The environment names no data folder, so nothing was read or changed.";
+
+// The data folder that an environment names. When an environment is passed, only its variables count, and the home folder comes
+// from it too. When no environment is passed at all, the process environment and the operating system's home folder are used.
+const dataFolderOf = (env: NodeJS.ProcessEnv | undefined): string => {
+  if (env === undefined) {
+    return dataFolder(process.env, process.platform, os.homedir());
+  }
+  const win32 = process.platform === "win32";
+  const home = win32 ? env.USERPROFILE : env.HOME;
+  const named = env.MULTI_ACCOUNT_SUPABASE_HOME || (win32 ? env.LOCALAPPDATA : env.XDG_DATA_HOME) || home;
+  if (!named) {
+    throw new Error(NO_DATA_FOLDER);
+  }
+  return dataFolder(env, process.platform, home ?? "");
+};
+
 // The state file of an agent, in the state folder of the data folder. A folder given by the caller is used instead. The data folder
 // comes from the environment the caller passes, or from the process environment when none is passed. An empty folder name counts
 // as not given, as it does for the data folder variable.
-export const statePath = (agent: AgentId, dataDir?: string, env: NodeJS.ProcessEnv = process.env): string =>
-  path.join(dataDir || dataFolder(env, process.platform, os.homedir()), "state", `${agent}.json`);
+export const statePath = (agent: AgentId, dataDir?: string, env?: NodeJS.ProcessEnv): string =>
+  path.join(dataDir || dataFolderOf(env), "state", `${agent}.json`);
 
 // The one message for a state file that cannot be used. The reason is a fixed phrase or a system error code. The file's text
 // never reaches the message, and no cause is kept, because a parser error can quote the text.

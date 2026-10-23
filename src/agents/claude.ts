@@ -99,7 +99,7 @@ const reportsNotInstalled = (result: CommandResult): boolean =>
 
 // What the record of a scope lists for this plugin: the plugin entry, and the marketplace.
 const recordOf = async (ctx: Context, scope: Scope): Promise<{ plugin: boolean; marketplace: boolean }> => {
-  const items = await recordedItems("claude", scopeKey(scope, ctx.projectDir));
+  const items = await recordedItems("claude", scopeKey(scope, ctx.projectDir), undefined, ctx.env);
   return {
     plugin: items.some((item) => item.kind === "mcp-entry" && item.name === PLUGIN_ID),
     marketplace: items.some((item) => item.kind === "marketplace" && item.name === MARKETPLACE),
@@ -143,7 +143,7 @@ const installScope = async (ctx: Context, scope: Scope): Promise<Step> => {
   }
   if (added.code === 0 && !ctx.dryRun) {
     try {
-      await record("claude", key, { kind: "marketplace", name: MARKETPLACE });
+      await record("claude", key, { kind: "marketplace", name: MARKETPLACE }, undefined, ctx.env);
     } catch (error) {
       return step(
         scope,
@@ -169,7 +169,7 @@ const installScope = async (ctx: Context, scope: Scope): Promise<Step> => {
     return step(scope, "ok", `Would install the plugin with claude plugin install, in the ${scope} scope.`);
   }
   try {
-    await record("claude", key, { kind: "mcp-entry", name: PLUGIN_ID });
+    await record("claude", key, { kind: "mcp-entry", name: PLUGIN_ID }, undefined, ctx.env);
   } catch (error) {
     const removal = `claude plugin uninstall ${PLUGIN_ID} --scope ${CLI_SCOPE[scope]}`;
     // When the marketplace add worked, its record was written before this one, so the marketplace is still registered, and the
@@ -242,7 +242,7 @@ const uninstallScope = async (ctx: Context, scope: Scope): Promise<Step> => {
   }
   if (!ctx.dryRun) {
     try {
-      await forget("claude", scopeKey(scope, ctx.projectDir));
+      await forget("claude", scopeKey(scope, ctx.projectDir), undefined, ctx.env);
     } catch (error) {
       // The plugin is removed, or was never installed, but the record could not be cleared. A later uninstall clears it when
       // claude reports the plugin as not installed. That wording is not verified.

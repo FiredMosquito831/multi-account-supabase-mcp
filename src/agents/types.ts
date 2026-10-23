@@ -58,8 +58,8 @@ export interface Context {
   packageRoot: string;
   dryRun: boolean;
   // The environment of this context. makeContext sets it from the caller's environment, or else from the process environment.
-  // The codex adapter reads its home and skill folders from it. The state files are read from the environment that the install
-  // flow passes to them. An adapter's own state calls pass no environment, so they read the process environment.
+  // The codex adapter reads its home and skill folders from it. The claude, antigravity, codex and opencode adapters pass it to every
+  // state call, so their state files are read from the data folder that it names.
   env: NodeJS.ProcessEnv;
   // Each command line and file action, in the order it was asked for. The install flow runs a dry pass first and shows these
   // lines before its real pass makes any change.

@@ -94,7 +94,7 @@ type RecordRead = { ok: true; recorded: boolean } | { ok: false; message: string
 
 const readRecord = async (ctx: Context): Promise<RecordRead> => {
   try {
-    const items = await recordedItems("antigravity", scopeKey("global", ctx.projectDir));
+    const items = await recordedItems("antigravity", scopeKey("global", ctx.projectDir), undefined, ctx.env);
     return { ok: true, recorded: items.some((item) => item.kind === "mcp-entry" && item.name === DIRECT_KEY) };
   } catch (error) {
     return { ok: false, message: errorText(error) };
@@ -119,11 +119,11 @@ const recordReason = (error: unknown): string => {
 // gives the removal command for the owner to run.
 const recordAdded = async (ctx: Context, absentBefore: boolean): Promise<Step> => {
   try {
-    await record("antigravity", scopeKey("global", ctx.projectDir), { kind: "mcp-entry", name: DIRECT_KEY });
+    await record("antigravity", scopeKey("global", ctx.projectDir), { kind: "mcp-entry", name: DIRECT_KEY }, undefined, ctx.env);
     return step("ok", ADDED);
   } catch (error) {
     const failed =
-      `The server was added, but its record file ${statePath("antigravity")} could not be written: ${recordReason(error)}.`;
+      `The server was added, but its record file ${statePath("antigravity", undefined, ctx.env)} could not be written: ${recordReason(error)}.`;
     if (!absentBefore) {
       return step("error", `${failed} To remove it, run ${REMOVE_COMMAND}.`);
     }
@@ -216,11 +216,11 @@ const uninstallGlobal = async (ctx: Context): Promise<Step> => {
     return step("error", failureLine(removed));
   }
   try {
-    await forget("antigravity", scopeKey("global", ctx.projectDir));
+    await forget("antigravity", scopeKey("global", ctx.projectDir), undefined, ctx.env);
   } catch {
     // The record is updated after agy has acted, so a failure here is reported as a fact about both, not as a refusal that
     // changed nothing.
-    const where = statePath("antigravity");
+    const where = statePath("antigravity", undefined, ctx.env);
     return step(
       "error",
       removed.code === 0

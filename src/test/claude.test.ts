@@ -180,6 +180,26 @@ const expectSkipNoCommandAndUnchangedState = async (
   assert.equal(await stateFileText(), before, scope);
 };
 
+test("an install with a context environment that names another data folder writes its records there, and nothing under the process folder", () =>
+  inTemporaryRoot(async (root) => {
+    const given = path.join(root, "given-data");
+    const env: NodeJS.ProcessEnv = { ...process.env, MULTI_ACCOUNT_SUPABASE_HOME: given };
+    const ctx = makeContext({
+      projectDir: path.join(root, "project"),
+      cliPath: path.join(root, "package", "dist", "cli.js"),
+      packageRoot: path.join(root, "package"),
+      dryRun: false,
+      present: () => true,
+      run: async () => ({ code: 0, stdout: "", stderr: "" }),
+      env,
+    });
+    const steps = await claudeAdapter.install(ctx, "global");
+    assert.equal(steps[0]?.status, "ok");
+    assert.equal(existsSync(path.join(given, "state", "claude.json")), true);
+    assert.equal(existsSync(statePath("claude")), false);
+    assert.equal((await recordedItems("claude", scopeKey("global", ctx.projectDir), undefined, env)).length, 2);
+  }));
+
 test("the adapter is claude, has the three scopes, and asks the system for the claude command", () =>
   inTemporaryRoot(async () => {
     // Every name must point into a temporary folder, so this test is isolated like the others.

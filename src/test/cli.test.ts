@@ -10,7 +10,6 @@ import type { Scope } from "../agents/scopes.js";
 import type { AgentId } from "../agents/state.js";
 import type { AgentAdapter, Context, Step } from "../agents/types.js";
 import { releaseHooks } from "../accounts/lock.js";
-import { clearStopRequest } from "../install/flow.js";
 import { type AccountRecord, Registry } from "../accounts/registry.js";
 import {
   type CliIo,
@@ -843,7 +842,6 @@ test("the first Ctrl+C of a change asks it to stop, and does not exit", () =>
       assert.equal(exits, 0);
     } finally {
       stop();
-      clearStopRequest();
     }
   }));
 
@@ -877,7 +875,6 @@ test("an interrupt of a change writes the notice to stderr after the stdout line
     source.emit("SIGINT");
     assert.equal(await within(exited, 2000), 130);
     assert.deepEqual(order, ["stdout line written", `stderr ${INTERRUPT_NOTICE}`]);
-    clearStopRequest();
   }));
 
 test("install with stdin a pipe and stdout a terminal asks nothing, and refuses without --yes", () =>
