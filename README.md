@@ -18,7 +18,7 @@ Not verified yet, because none of these has been run:
 - Ctrl+C at the token prompt, and Ctrl+C while a child process runs.
 - Node 22. The local runtime is Node 24.6.0.
 - The MCP protocol version 2026-07-28. Only the older startup path is tested.
-- The installers against a real Claude Code, Codex, opencode or Antigravity. The file locations, the listings and the entry layouts are ASSUMED for some agents. Each one is marked in `docs/install.md` and `docs/scopes.md`.
+- The installers against a real Claude Code, Codex, opencode or Antigravity. The file locations, the listings and the entry layouts are ASSUMED for some agents. Each one is marked in `docs/INSTALL.md` and `docs/AGENTS.md`.
 - The Claude Code marketplace, `FiredMosquito831/multi-account-supabase-mcp`. It is not created (not verified: checked on 2026-10-20 only), so the Claude Code install step is expected to fail until it exists.
 
 ## Build and test from the checkout
@@ -165,7 +165,7 @@ multi-account-supabase-mcp install --yes
 - The Codex, opencode and Antigravity entries start the server with the Node program that ran install, this package's command line program, and `serve`. Claude Code gets the server from the plugin instead. No token is written to an agent's configuration.
 - A record keeps what this tool wrote, for each agent and each scope. The record is a JSON file for each agent in the `state` folder of the data folder. For Codex, opencode and Antigravity, install refuses to take over an entry that it did not write. The Claude Code install does not check for an existing plugin. See SECURITY.md, section 7. Update and uninstall change only what the record lists.
 
-The agents, the scopes and the file locations are in `docs/scopes.md`. The steps for each agent are in `docs/install.md`. Problems and their messages are in `docs/troubleshooting.md`.
+The agents, the scopes and the file locations are in `docs/AGENTS.md`. The steps for each agent are in `docs/INSTALL.md`. Problems and their messages are in `docs/TROUBLESHOOTING.md`.
 
 ### update [agent...]
 
@@ -210,7 +210,7 @@ The plugin has five slash commands. Claude Code is expected to name them `/multi
 ### Install routes
 
 - Installer route: `multi-account-supabase-mcp install claude` runs the `claude plugin` commands for one scope: global, unless `--scope` names another. See `install [agent...]`, above. Not verified against a real Claude Code.
-- Manual route: in Claude Code, run `/plugin marketplace add FiredMosquito831/multi-account-supabase-mcp`, then `/plugin install multi-account-supabase@multi-account-supabase-mcp` (not verified: the Claude Code interface was not run). `docs/install.md` has the same steps.
+- Manual route: in Claude Code, run `/plugin marketplace add FiredMosquito831/multi-account-supabase-mcp`, then `/plugin install multi-account-supabase@multi-account-supabase-mcp` (not verified: the Claude Code interface was not run). `docs/INSTALL.md` has the same steps.
 - The installer's `update`, `uninstall` and `doctor` act only on what the tool recorded, so they do not act on a plugin added by hand (`src/agents/claude.ts`, lines 191, 227 and 298). The installer's `install` does not check for a plugin added by hand. It runs `claude plugin install` (`src/agents/claude.ts`, line 158). What `claude plugin install` does with a plugin that is already installed is not verified.
 
 ### Marketplace and manifest
@@ -313,7 +313,7 @@ A client that supports this notice updates its list. Another client may need a n
 - On Windows: `%LOCALAPPDATA%\multi-account-supabase-mcp\accounts.json`. If `LOCALAPPDATA` is not set, the folder is `AppData\Local` in your home folder.
 - On other systems: `$XDG_DATA_HOME/multi-account-supabase-mcp/accounts.json`. When `XDG_DATA_HOME` is not set, the file is `~/.local/share/multi-account-supabase-mcp/accounts.json`.
 - If `MULTI_ACCOUNT_SUPABASE_HOME` is set to a folder, that folder is used instead, and the file is `accounts.json` inside it. The installer, `update` and `doctor` read this variable from their own environment, so they use the folder it names.
-- The entries that install writes do not set this variable, and the tool does not write it into agent configuration. The installed server reads the default accounts file, unless the variable is set in the environment that the agent gives the server (ASSUMED, not verified: how each agent passes its environment). If the variable is set only for the installer, or in a shell that does not start the agent, the server reads the default file, and if that file has no accounts it refuses calls with the setup text (ASSUMED, not verified: how each agent passes its environment). See "The server does not find the accounts file" in `docs/troubleshooting.md`.
+- The entries that install writes do not set this variable, and the tool does not write it into agent configuration. The installed server reads the default accounts file, unless the variable is set in the environment that the agent gives the server (ASSUMED, not verified: how each agent passes its environment). If the variable is set only for the installer, or in a shell that does not start the agent, the server reads the default file, and if that file has no accounts it refuses calls with the setup text (ASSUMED, not verified: how each agent passes its environment). See "The server does not find the accounts file" in `docs/TROUBLESHOOTING.md`.
 
 The rules for other systems are tested with fake values. They have not been run on macOS or Linux.
 

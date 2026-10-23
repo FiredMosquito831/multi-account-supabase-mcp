@@ -35,7 +35,7 @@ The same case for Antigravity. Remove the entry with `agy mcp remove multi-accou
 
 ### `... already has an entry named "multi-account-supabase" under "mcp" that this tool did not write, so nothing was changed.`
 
-The same case for opencode. Edit the file yourself, or move the entry, then run install again. The file name and the layout are ASSUMED, not verified. See `docs/install.md`.
+The same case for opencode. Edit the file yourself, or move the entry, then run install again. The file name and the layout are ASSUMED, not verified. See `docs/INSTALL.md`.
 
 ### `... already has the table mcp_servers.multi-account-supabase, which this tool did not write, so nothing was changed.`
 
@@ -81,7 +81,7 @@ The command line uses an option that the command does not take, a missing value,
 
 ### `unknown scope; the scopes are global, project and local. Nothing was changed.`
 
-Use one of the three scope names. See `docs/scopes.md`.
+Use one of the three scope names. See `docs/AGENTS.md`.
 
 ### `unknown agent; the agents are claude, codex, opencode, antigravity. Nothing was changed.`
 
@@ -89,7 +89,7 @@ Check the agent name. The four names are `claude`, `codex`, `opencode` and `anti
 
 ### `antigravity has no project scope. Nothing was changed.`
 
-You named an agent that does not support the scope. See `docs/scopes.md`.
+You named an agent that does not support the scope. See `docs/AGENTS.md`.
 
 ### `The command line program path must be absolute and written as path.resolve writes it, so nothing was changed.`
 
@@ -101,7 +101,7 @@ The path of the program that runs install is not in the form this tool needs. Ru
 
 ### `Nothing to update: no agent has a record in any scope.` and `Nothing to uninstall: ...`
 
-No record exists for the agents you named, or for any agent. Check the folder. A project or local record is kept under the folder where you installed it. See `docs/scopes.md`.
+No record exists for the agents you named, or for any agent. Check the folder. A project or local record is kept under the folder where you installed it. See `docs/AGENTS.md`.
 
 ### `The marketplace is still registered.`
 

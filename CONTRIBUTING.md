@@ -64,7 +64,7 @@ The install, update, uninstall and doctor commands are in `src/install/flow.ts`.
 ## Documentation rules
 
 - Documentation for a feature comes in the same change as the feature.
-- When behavior changes, update the documents that describe it: `README.md`, `SECURITY.md` and `CONTRIBUTING.md`, the Unreleased section of `CHANGELOG.md`, and the guides in `docs/` (`install.md`, `scopes.md` and `troubleshooting.md`).
+- When behavior changes, update the documents that describe it: `README.md`, `SECURITY.md` and `CONTRIBUTING.md`, the Unreleased section of `CHANGELOG.md`, and the guides in `docs/` (`INSTALL.md`, `AGENTS.md` and `TROUBLESHOOTING.md`).
 - Every number, message, path and exit code in the documentation must match the source. Check each one against the code before you commit.
 
 ## Commit messages

@@ -41,9 +41,9 @@ This project follows the format of [Keep a Changelog](https://keepachangelog.com
 - One record file for each agent, in the `state` folder of the data folder. It holds what this tool wrote, and no token.
 - Backups of an edited config file, such as the Codex project `config.toml` or opencode's `opencode.json` (names ASSUMED, not verified): `<file>.bak`, then `.bak2` and so on. A backup is never overwritten. A `SKILL.md` file is replaced without a backup, and only when this tool created it.
 - The Claude Code marketplace is added in the scope of the plugin, and it is recorded (not verified against a real Claude Code). Uninstall keeps it and prints the command that removes it.
-- The Codex skill file `supabase-accounts`, in the global and project scopes. Its location is ASSUMED, not verified; see `docs/install.md`.
+- The Codex skill file `supabase-accounts`, in the global and project scopes. Its location is ASSUMED, not verified; see `docs/INSTALL.md`.
 - Ctrl+C at an install question (which agents, which scope, or apply) exits with code 1, and changes nothing. Ctrl+C at any other time during an install, update or uninstall that is not a dry run exits with code 130 and prints a notice (not verified in a real terminal).
-- The guides `docs/install.md`, `docs/scopes.md` and `docs/troubleshooting.md`.
+- The guides `docs/INSTALL.md`, `docs/AGENTS.md` and `docs/TROUBLESHOOTING.md`.
 - The Claude Code plugin `multi-account-supabase`, in the marketplace `multi-account-supabase-mcp` in this repository. Its server key is `supabase`. Claude Code has not been run with it (not verified).
 - Five plugin commands (not verified: Claude Code was not run): `accounts` and `doctor` run the launcher with one fixed word, and `add-account`, `set-default` and `remove-account` give a terminal line for you to run.
 - The launcher runs the installed command when it is on PATH, and otherwise `npx` with the plugin's version (ASSUMED, not verified: npx was not run). It accepts plain words only.

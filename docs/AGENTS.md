@@ -19,7 +19,7 @@ A scope says where an agent keeps the entry for this server. There are three sco
 - **global** applies to the whole machine, for the user who runs the command.
   - Claude Code: its user scope (ASSUMED, not verified: that Claude Code has this scope). The installer passes `--scope user` to Claude Code.
   - Codex: the user's Codex configuration, written by `codex mcp add` (not verified), and a skill file in the Codex home folder. The skill folder is ASSUMED, not verified.
-  - opencode: `opencode.json` in opencode's configuration folder (file name and folder ASSUMED, not verified). See `docs/install.md` for the folder.
+  - opencode: `opencode.json` in opencode's configuration folder (file name and folder ASSUMED, not verified). See `docs/INSTALL.md` for the folder.
   - Antigravity: agy's own configuration. This tool does not read it. The location is ASSUMED, not verified.
 - **project** applies to one project folder. The project folder is the folder you are in when you run the command.
   - Codex: a table in `.codex/config.toml` in that folder (ASSUMED, not verified: the path), and a skill file in `.agents/skills`. The skill folder is ASSUMED, not verified, and Codex reads the project file only when the folder is trusted (ASSUMED, not verified).
@@ -53,6 +53,6 @@ Otherwise, an agent that does not support a scope gets one skipped line for that
 
 ## Scope and the Claude marketplace
 
-Claude Code gets the marketplace in the same scope as the plugin. Uninstall does not remove the marketplace. It prints the command that removes it in that scope. See `docs/install.md`.
+Claude Code gets the marketplace in the same scope as the plugin. Uninstall does not remove the marketplace. It prints the command that removes it in that scope. See `docs/INSTALL.md`.
 
 Not verified: how Claude Code treats each scope when it reads the plugin. The commands are the ones this tool runs. The results have not been run against a real Claude Code.

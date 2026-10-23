@@ -1,6 +1,6 @@
 # Install guide
 
-This guide shows how to add the server to each agent with the install commands. Read `docs/scopes.md` for the scopes, and `docs/troubleshooting.md` when a step fails.
+This guide shows how to add the server to each agent with the install commands. Read `docs/AGENTS.md` for the scopes, and `docs/TROUBLESHOOTING.md` when a step fails.
 
 ## Before you start
 
@@ -16,7 +16,7 @@ For Codex, opencode and Antigravity, the entry starts the server with the Node p
 
 The record keeps the path of the command line program that ran the install. If that program moves, run `update` from its new location. `doctor` checks that the recorded command line program still exists. It does not check the Node program.
 
-The entry does not set `MULTI_ACCOUNT_SUPABASE_HOME`. See "The server does not find the accounts file" in `docs/troubleshooting.md`.
+The entry does not set `MULTI_ACCOUNT_SUPABASE_HOME`. See "The server does not find the accounts file" in `docs/TROUBLESHOOTING.md`.
 
 ## One command for all agents
 
