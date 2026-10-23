@@ -22,12 +22,12 @@ import { type AgentAdapter, type Context, type Step } from "./types.js";
 const SCOPES = supportedScopes("claude");
 
 const PROGRAM = "claude";
-const MARKETPLACE = "multi-account-supabase-mcp";
-const PLUGIN = "multi-account-supabase";
-const PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+export const MARKETPLACE = "multi-account-supabase-mcp";
+export const PLUGIN = "multi-account-supabase";
+export const PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 // The repository that holds the marketplace. This source is not verified, because the repository does not exist yet. The
 // publish step, which needs the owner's go-ahead, creates it.
-const MARKETPLACE_SOURCE = "FiredMosquito831/multi-account-supabase-mcp";
+export const MARKETPLACE_SOURCE = "FiredMosquito831/multi-account-supabase-mcp";
 
 const CLI_SCOPE: Record<Scope, "user" | "project" | "local"> = {
   global: "user",

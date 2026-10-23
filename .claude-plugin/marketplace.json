@@ -1,0 +1,16 @@
+{
+  "name": "multi-account-supabase-mcp",
+  "owner": { "name": "FiredMosquito831" },
+  "metadata": {
+    "description": "Multi-account Supabase MCP: one official @supabase/mcp-server-supabase per account, with tool calls sent to one, several or all accounts",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "multi-account-supabase",
+      "description": "Supabase MCP tools for several accounts at once. Add each account with its own token in a terminal, then send a call to one account, a list, or all of them.",
+      "source": "./plugins/multi-account-supabase",
+      "strict": false
+    }
+  ]
+}
