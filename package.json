@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "type": "module",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/FiredMosquito831/multi-account-supabase-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FiredMosquito831/multi-account-supabase-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/FiredMosquito831/multi-account-supabase-mcp/issues"
+  },
   "engines": {
     "node": ">=22"
   },

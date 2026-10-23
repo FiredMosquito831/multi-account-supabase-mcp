@@ -1,0 +1,109 @@
+# Publish workflow for multi-account-supabase-mcp.
+#
+# WRITTEN, NOT RUN. This workflow must not publish from this repository now.
+# It publishes only when all of these hold:
+#   1. The repository is FiredMosquito831/multi-account-supabase-mcp (the `if:` on the jobs).
+#   2. The owner has created the trusted publisher on npmjs.com. That is not done yet.
+#   3. The owner gives the go-ahead for the release step, by name.
+# The first publish is the owner's, from a terminal (design 6.9, docs/superpowers/specs).
+# This workflow does not replace that step.
+#
+# No npm token and no secret is used. The publish job uses npm trusted publishing
+# (OIDC, with id-token: write) and npm 11.5.1, pinned. Every uses: line is pinned to a
+# full commit SHA, with the same pins as ci.yml.
+
+name: Publish
+
+on:
+  release:
+    types: [published]
+  push:
+    branches: [main]
+    paths: [package.json]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+
+  check-version:
+    name: Check that the version is new
+    if: github.repository == 'FiredMosquito831/multi-account-supabase-mcp'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.decide.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Decide whether this run publishes
+        id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          new_version="$(node -p "require('./package.json').version")"
+          publish=false
+          if [ "$EVENT_NAME" = "release" ]; then
+            if [ "$RELEASE_TAG" = "$new_version" ]; then
+              publish=true
+            else
+              echo "Release tag '$RELEASE_TAG' is not the version in package.json ('$new_version'). Not publishing." >&2
+            fi
+          elif [ "$EVENT_NAME" = "push" ]; then
+            # Compare with the commit before this push, not HEAD~1: one push can carry several commits.
+            if previous_json="$(git show "$BEFORE_SHA:package.json")"; then
+              old_version="$(printf '%s' "$previous_json" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
+              if [ "$old_version" != "$new_version" ]; then
+                publish=true
+              else
+                echo "The version in package.json ('$new_version') did not change. Not publishing." >&2
+              fi
+            else
+              echo "No previous package.json to compare with. Not publishing." >&2
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Version in package.json: $new_version. Publish: $publish."
+
+  publish:
+    name: Publish to npm
+    needs: [check-version, test]
+    if: github.repository == 'FiredMosquito831/multi-account-supabase-mcp' && needs.check-version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install npm 11.5.1 (pinned, for trusted publishing)
+        run: npm install -g npm@11.5.1
+      - name: Install dependencies
+        run: npm ci
+      - name: Publish with provenance
+        run: npm publish --provenance
