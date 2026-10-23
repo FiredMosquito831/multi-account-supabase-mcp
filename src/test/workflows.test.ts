@@ -200,3 +200,51 @@ test("npm.yml uses only the action pins that ci.yml uses", () => {
     assert.ok(pinned.has(value), `"${value}" must be one of the pins ci.yml uses`);
   }
 });
+
+// The live-check runbook, docs/TESTING.md. Each live check is one block, headed by its name, with one go-ahead line
+// that names the same step. The runbook must name each live check listed here.
+const TESTING_PAGE = join(root, "docs", "TESTING.md");
+const GO_AHEAD = "Needs your go-ahead for this step";
+const REQUIRED_LIVE_CHECKS = [
+  "Read-only query tool refusal",
+  "Catalog placeholder check",
+  "First real child start",
+  "Ctrl+C check on Windows",
+  "Protocol version check",
+  "Tool-list change notice",
+  "Codex, opencode and Antigravity listings",
+  "Windows child environment check",
+  "Claude Code marketplace and plugin install",
+  "Marketplace ref in Claude Code",
+  "Scoped token dashboard steps",
+];
+
+// The problems with the live-check blocks of a runbook. An empty list means the blocks are as required.
+function liveCheckProblems(page: string): string[] {
+  const lines = page.split(/\r?\n/);
+  const start = lines.indexOf("## Live checks");
+  const stop = lines.indexOf("## Log");
+  if (start < 0 || stop < start) return ["the page must hold a Live checks section, then a Log section"];
+  const blocks: { name: string; body: string[] }[] = [];
+  for (const line of lines.slice(start, stop)) {
+    if (line.startsWith("### ")) blocks.push({ name: line.slice(4).trim(), body: [] });
+    else blocks[blocks.length - 1]?.body.push(line);
+  }
+  const problems: string[] = [];
+  const occurrences = page.split(GO_AHEAD).length - 1;
+  if (occurrences !== blocks.length) {
+    problems.push(`the page has ${blocks.length} live-check blocks and ${occurrences} go-ahead lines`);
+  }
+  for (const block of blocks) {
+    const line = `${GO_AHEAD}: ${block.name}.`;
+    if (!block.body.includes(line)) problems.push(`the block "${block.name}" has no line "${line}"`);
+  }
+  for (const name of REQUIRED_LIVE_CHECKS) {
+    if (!blocks.some((block) => block.name === name)) problems.push(`no live-check block is named "${name}"`);
+  }
+  return problems;
+}
+
+test("TESTING.md: each live-check block has one go-ahead line, and each required live check is present", () => {
+  assert.deepEqual(liveCheckProblems(readFileSync(TESTING_PAGE, "utf8")), []);
+});
