@@ -16,6 +16,8 @@ This project follows the format of [Keep a Changelog](https://keepachangelog.com
 - The accounts file is read before each call.
 - `remove` prints that the Supabase token still works until it is revoked.
 - Exit codes: 0 for success, 1 when a command ran and failed, 2 when the command line is wrong.
+- A switch given twice is refused with exit code 2, the same as a valued option given twice.
+- An unknown agent name refuses install, update or uninstall with exit code 1, and an unknown scope refuses it with exit code 2. Both are refused before any change.
 - An error about the accounts file names the file and the reason, and never its content.
 - With no accounts, the tool list shows only `account_list`, and its description says how to add an account.
 - The server sends a tool-list changed notice when the list of accounts changes, in the order the file gives them, or an account is re-added.
@@ -37,28 +39,39 @@ This project follows the format of [Keep a Changelog](https://keepachangelog.com
 - `doctor` checks each recorded scope, the recorded command line program path, and each account's token.
 - Options for the install commands: `--scope <scope>`, `--dry-run` and `--yes`. `--yes` is for install and remove only. The scopes are `global`, `project` and `local`. `local` is for Claude Code only, and Antigravity has `global` only.
 - For install, a plan with an error line is not applied, even with `--yes`. Update and uninstall also stop before any change when a step in the plan is an error line.
+- Any agent that does not support the chosen scope gets a skipped line with the reason. In update and uninstall, a named agent with no record in a scope gets a skipped line too. A named agent that does not support a named scope refuses the whole command.
 - For Codex, opencode and Antigravity, an entry that this tool did not write is refused, not taken over. The Claude Code install does not check for an existing plugin.
+- For Codex, uninstall removes a project table only when the record lists it and the table holds the entry this tool wrote. Otherwise it keeps the table and its record, and the step says how to remove the table by hand (ASSUMED, not verified: the real layout of the table is not run).
+- For Codex, install refuses a project config file that is not UTF-8 or does not parse, and writes nothing to it. Update and uninstall refuse such a file when the record lists items in that scope, and skip it when the record lists none there (ASSUMED, not verified: the Codex project file and its layout).
 - One record file for each agent, in the `state` folder of the data folder. It holds what this tool wrote, and no token.
+- A record file that cannot be read stops that agent's step before any change. The message names the file and the error code, and never the system's message.
 - Backups of an edited config file, such as the Codex project `config.toml` or opencode's `opencode.json` (names ASSUMED, not verified): `<file>.bak`, then `.bak2` and so on. A backup is never overwritten. A `SKILL.md` file is replaced without a backup, and only when this tool created it.
 - The Claude Code marketplace is added in the scope of the plugin, and it is recorded (not verified against a real Claude Code). Uninstall keeps it and prints the command that removes it.
+- The Claude Code install stops before the plugin install when the marketplace add fails and the record of that scope does not list the marketplace. A marketplace of that name may come from another source, so nothing is installed from it (not verified against a real Claude Code).
 - The Codex skill file `supabase-accounts`, in the global and project scopes. Its location is ASSUMED, not verified; see `docs/INSTALL.md`.
+- An install records each folder it makes. Uninstall removes a recorded folder only when it is empty, deepest first. When a folder cannot be made, or its record cannot be written, the folders that the same step made are removed again.
+- For Codex and opencode, install refuses a project folder that does not exist, so nothing is created above it. Uninstall never removes the project folder.
 - Ctrl+C at an install question (which agents, which scope, or apply) exits with code 1, and changes nothing. Ctrl+C at any other time during an install, update or uninstall that is not a dry run exits with code 130 and prints a notice (not verified in a real terminal).
+- During a real change, the first Ctrl+C lets the step in progress finish, stops before the next step, prints the notice and exits with code 130. A second Ctrl+C exits at once (not verified in a real terminal).
 - The guides `docs/INSTALL.md`, `docs/AGENTS.md` and `docs/TROUBLESHOOTING.md`.
 - The Claude Code plugin `multi-account-supabase`, in the marketplace `multi-account-supabase-mcp` in this repository. Its server key is `supabase`. Claude Code has not been run with it (not verified).
 - Five plugin commands (not verified: Claude Code was not run): `accounts` and `doctor` run the launcher with one fixed word, and `add-account`, `set-default` and `remove-account` give a terminal line for you to run.
 - The launcher runs the installed command when it is on PATH, and otherwise `npx` with the plugin's version (ASSUMED, not verified: npx was not run). It accepts plain words only.
 - A copy of the `supabase-accounts` skill in the plugin.
 - A test checks that the plugin, the package and the marketplace have the same version.
+- A publish workflow, `.github/workflows/npm.yml`, is written and has not been run. It runs only from a published GitHub release whose tag matches the version in `package.json`, and it uses npm trusted publishing with no npm token. Not verified: the trusted publisher is not yet set up on npmjs.com, and no release has been made.
 
 ### Security
 
 - No token is printed, and no token is written to the accounts file.
 - A command line with a name that contains `sbp_` in any letter case is refused with exit code 2, and the text is not printed. This applies to `add`, `default`, `remove`, `install`, `update` and `uninstall`, and to an unknown command.
+- Token-shaped text (`sbp_` followed by letters, digits, `_` or `-`, in any letter case) is printed as `[redacted]` on every line that install, update, uninstall and doctor print.
 - The child environment is an allowlist, and each child gets only the token of its own account.
 - The identity check fails closed: a profile without a user id is refused.
 - Each call reads the accounts file again, so a removed account stops at the next call.
 - The installers write no token. The entries they write hold the program to run and its arguments. For opencode, the entry also holds a type and an enabled flag.
 - A Windows `.cmd` or `.bat` shim does not run from a folder that holds a node program, or from a folder that cannot be read.
+- A program is found only on the absolute PATH entries, never in the working folder. An argument with characters that cmd.exe cannot carry is refused before a `.cmd` or `.bat` shim starts, and nothing runs.
 - The installers' agent commands get the whole environment of the installer, not the allowlist. `SECURITY.md` says so.
 - For Codex and opencode, an edited entry or table is never removed or replaced. An entry is edited when its arguments are not the recorded command line program path followed by `serve`, when its command is not an absolute path, when it has an env key (Codex) or an environment or env key (opencode) whose value is not empty, or, for opencode, when its type or enabled flag differs (ASSUMED, not verified: the real CLI layout is not run). Install, update and uninstall leave it in place, and the step is an error.
 - The plugin's command files take no argument from you. Only the `accounts` and `doctor` lines run a command, each with one fixed word.
