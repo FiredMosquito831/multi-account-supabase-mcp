@@ -104,7 +104,7 @@ Default account: side
 
 ### remove <name>
 
-Removes the account record and the token stored for it on this machine. It prints:
+Removes the account record and the token stored for it on this machine. In a terminal it asks first: type `y` or `yes` to remove. Any other answer removes nothing, prints `Nothing was removed.`, and exits 0. Without a terminal it needs `--yes`. Without a terminal and without `--yes` it is refused with exit code 2 and removes nothing. `--yes` removes at once. An account name that has no record and no stored token is reported at once, with no question, because nothing can be removed: it prints `Error: No account named "<name>".` and exits 1. A successful removal prints:
 
 ```
 Removed "side".
@@ -130,7 +130,7 @@ Commands:
   add <name> --pat      Add an account. The token is typed in a terminal, and it is hidden.
   list                  List the accounts. The default is marked with an asterisk.
   default <name>        Make an account the default.
-  remove <name>         Remove an account and its stored token.
+  remove <name>         Remove an account and its stored token. Asks first in a terminal; needs --yes without one.
   install [agent...]    Add the server to the named agents, or to all agents. Needs --yes without a terminal.
   update [agent...]     Update the installed entries and the recorded command line path.
   uninstall [agent...]  Remove what install recorded. The accounts and the Claude marketplace stay.
@@ -143,7 +143,7 @@ Options for install, update and uninstall:
                         Install uses global when none is given. Update and uninstall
                         act on global and on this folder's project and local scopes, where a record exists, if none is given.
   --dry-run             Show the plan and change nothing.
-  --yes                 Install only: apply the plan without asking.
+  --yes                 Install and remove only: apply without asking.
 ```
 
 ### install [agent...]
@@ -187,9 +187,9 @@ Checks, for each scope that has a record: the agent's own check, and that the co
 
 | Code | Meaning | Examples |
 | --- | --- | --- |
-| 0 | The command succeeded. | Any command that prints its success line. `serve` returns 0 when the client closes stdin. An install, update or uninstall with no step that failed. A dry run with no error line. A plan that you answer no to. |
-| 1 | The command ran and failed. | A name that is not valid, such as `Work`. The name `all`. An unknown name for `default` or `remove`. A name that is already taken. A store or file error. Supabase rejects the token. No token is typed. Ctrl+C at the token prompt. Ctrl+C at a question during install (which agents, which scope, or apply), which prints `No answer could be read, so nothing was changed.` Not verified in a real terminal. An agent's step failed. An install plan has an error, so nothing was applied. An unknown agent name. A named agent that lacks the scope. `doctor` found a row that is an error. |
-| 2 | The command line is wrong. | A name that contains `sbp_` in any letter case, for `add`, `default`, `remove`, `install`, `update` and `uninstall`, and an unknown command. The tool treats that text as the shape of a token. A missing `--pat`. Piped input for `add`. A wrong number of arguments, an unknown option, or a switch given twice. An unknown scope. `--yes` on `update` or `uninstall`. `install` with no terminal and no `--yes`. Any argument to `doctor`. |
+| 0 | The command succeeded. | Any command that prints its success line. `serve` returns 0 when the client closes stdin. An install, update or uninstall with no step that failed. A dry run with no error line. A plan that you answer no to. A remove that you answer with anything other than y or yes, which prints `Nothing was removed.` |
+| 1 | The command ran and failed. | A name that is not valid, such as `Work`. The name `all`. An unknown name for `default` or `remove`. A name that is already taken. A store or file error. Supabase rejects the token. No token is typed. Ctrl+C at the token prompt. Ctrl+C at a question during install (which agents, which scope, or apply), which prints `No answer could be read, so nothing was changed.` Ctrl+C at the remove question, which prints `No answer could be read, so nothing was removed.` Not verified in a real terminal. An agent's step failed. An install plan has an error, so nothing was applied. An unknown agent name. A named agent that lacks the scope. `doctor` found a row that is an error. |
+| 2 | The command line is wrong. | A name that contains `sbp_` in any letter case, for `add`, `default`, `remove`, `install`, `update` and `uninstall`, and an unknown command. The tool treats that text as the shape of a token. A missing `--pat`. Piped input for `add`. A wrong number of arguments, an unknown option, or a switch given twice. An unknown scope. `--yes` on `update` or `uninstall`. `install` or `remove` with no terminal and no `--yes`. Any argument to `doctor`. |
 | 130 | Ctrl+C during an install, update or uninstall that is not a dry run, and not at a question. | The first Ctrl+C asks the command to stop. The stop is checked between real steps, so a command inside a step that has started still runs to its end, and no later step starts. If a step had started, the command prints `Stopped by Ctrl+C. The step that was running finished, and the steps after it did not run. Run multi-account-supabase-mcp uninstall --dry-run to see what is recorded.` If no step had started, it prints `Stopped by Ctrl+C before any step started, so nothing was changed.` Both go to stdout, and the exit code is 130. A second Ctrl+C exits at once with 130, and prints `Stopped by Ctrl+C. If a change had started, it may be partly made. Check the agent's own configuration, and run multi-account-supabase-mcp uninstall --dry-run to see what is recorded.` on stderr. Not verified in a real terminal. |
 
 Most errors go to stderr with the prefix `Error:`. Usage errors, unknown commands, refused command lines and the lock warning (the line that says a lock file could not be removed) do not have that prefix. The lock busy message does have it, as the accounts file section shows. Install, update, uninstall and doctor print their plans and their results on stdout, one line for each step, as `[ok] claude global: ...`, `[skipped] ...` or `[error] ...`. For example, a name that is not valid prints:
@@ -243,7 +243,7 @@ A client that supports this notice updates its list. Another client may need a n
 
 ## Removing an account
 
-`remove <name>` deletes the account record from the accounts file, and it deletes the token stored for that account on this machine.
+`remove <name>` deletes the account record from the accounts file, and it deletes the token stored for that account on this machine. In a terminal it asks first, and `--yes` skips the question. Without a terminal it needs `--yes`.
 
 - The Supabase token still works. It stays valid until you revoke it in your Supabase account settings. Not verified against Supabase. This tool does not revoke it, and it has no command to do so.
 - A running server refuses the account at its next call. When the list of accounts changes, the server closes its account child processes. A later call starts new ones.

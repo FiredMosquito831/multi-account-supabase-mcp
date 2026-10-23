@@ -4,9 +4,9 @@
 
 | Code | Meaning | Examples |
 | --- | --- | --- |
-| 0 | The command ran, and no step failed. | An install that worked. A dry run with no error line. A plan you answered no to. An update or uninstall with nothing to do. |
-| 1 | A step failed, or the command could not finish. | An agent's command is not on PATH. An install plan has an error line, so nothing was applied. A state file cannot be read. A listing failed. A named agent lacks the scope. An unknown agent name. The command stopped with an unexpected error. No answer could be read at a question, which includes Ctrl+C at "Which agents?", "Which scope?" or "Apply these changes?". |
-| 2 | The command line is wrong. Nothing ran. | A name that has the shape of a token, for `add`, `default`, `remove`, `install`, `update` and `uninstall`, or an unknown command. The name is not printed. An option the command does not use, such as `--yes` on `update`. A missing or repeated value after `--scope`. An unknown scope. `install` with no terminal and no `--yes`. Any argument to `doctor`. |
+| 0 | The command ran, and no step failed. | An install that worked. A dry run with no error line. A plan you answered no to. A remove you answered with anything other than y or yes, which prints `Nothing was removed.` An update or uninstall with nothing to do. |
+| 1 | A step failed, or the command could not finish. | An agent's command is not on PATH. An install plan has an error line, so nothing was applied. A state file cannot be read. A listing failed. A named agent lacks the scope. An unknown agent name. The command stopped with an unexpected error. No answer could be read at a question, which includes Ctrl+C at "Which agents?", "Which scope?", "Apply these changes?" or the remove question. A remove that gets no answer prints `No answer could be read, so nothing was removed.` |
+| 2 | The command line is wrong. Nothing ran. | A name that has the shape of a token, for `add`, `default`, `remove`, `install`, `update` and `uninstall`, or an unknown command. The name is not printed. An option the command does not use, such as `--yes` on `update`. A missing or repeated value after `--scope`. An unknown scope. `install` or `remove` with no terminal and no `--yes`. Any argument to `doctor`. |
 | 130 | Ctrl+C during an install, update or uninstall that is not a dry run, and not at a question. | The first Ctrl+C asks the command to stop. The stop is checked between real steps, so a command inside a step that has started still runs to its end. The first Ctrl+C prints one of two lines on stdout, shown in the sections below. A second Ctrl+C exits at once, with the second notice on stderr. The exit code is 130. A change may be partly made. Not verified in a real terminal. |
 
 Installer plans and results are printed on stdout, and so is the notice of the first Ctrl+C. Usage errors and the notice of a second Ctrl+C are printed on stderr. A usage error prints `Usage error.` and then the usage text. On a command line, text that contains `sbp_` in any letter case is refused. In installer output (plans, step lines and reasons), text shaped like a token, `sbp_` followed by letters, digits, underscores or hyphens, is shown as `[redacted]`. A bare `sbp_` with nothing after it is printed.
@@ -73,11 +73,11 @@ Install asks questions only in a terminal window. Run the command in a terminal,
 
 ### `Usage error.` after `update --yes` or `uninstall --yes`
 
-The command line parser refuses `--yes` for `update` and `uninstall` before the command runs. The output is `Usage error.` and the usage text, and the exit code is 2. `--yes` is for install only. Remove it. `update` and `uninstall` never ask questions.
+The command line parser refuses `--yes` for `update` and `uninstall` before the command runs. The output is `Usage error.` and the usage text, and the exit code is 2. `--yes` is for install and remove only. Remove it. `update` and `uninstall` never ask questions.
 
 ### `Usage error.`
 
-The command line uses an option that the command does not take, a missing value, or a value that repeats. Run `multi-account-supabase-mcp help`. The options for install, update and uninstall are `--scope <scope>`, `--dry-run` and `--yes`. `--yes` is for install only. `doctor` takes no option.
+The command line uses an option that the command does not take, a missing value, or a value that repeats. Run `multi-account-supabase-mcp help`. The options for install, update and uninstall are `--scope <scope>` and `--dry-run`, and install also takes `--yes`. `--yes` is for install and remove only. `doctor` takes no option.
 
 ### `unknown scope; the scopes are global, project and local. Nothing was changed.`
 
@@ -152,6 +152,10 @@ The question could not be answered, for example because the input was closed. Ct
 ### doctor prints `error` for `account <name>: no token in the store.`
 
 The account has a record but no token on this machine. Remove the account and add it again in a terminal with `add <name> --pat`. See `README.md`.
+
+### `Error: No account named "<name>".` after `remove`
+
+In a terminal, `remove` does not ask about a name that has no record and no stored token, because nothing can be removed. It prints that error and exits 1, and it changes nothing.
 
 ### The server does not find the accounts file
 

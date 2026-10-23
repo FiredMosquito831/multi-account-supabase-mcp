@@ -235,10 +235,29 @@ const defaultCommand = async (args: string[], io: CliIo): Promise<number> => {
   }, { onReleaseFailure: (text) => io.stderr(text) });
 };
 
+const REMOVE_NEEDS_YES = "remove needs --yes when there is no terminal to ask in. Nothing was removed.";
+const NOT_REMOVED = "Nothing was removed.";
+const REMOVE_NO_ANSWER = "No answer could be read, so nothing was removed.";
+
+// Whether an account has a record, or a token in the store. A store that cannot be read counts as a token, so the question is
+// asked, and the removal reports the failure itself.
+const accountExists = async (io: CliIo, name: string): Promise<boolean> => {
+  const registry = await Registry.load(io.registryFile);
+  if (registry.get(name) !== undefined) {
+    return true;
+  }
+  try {
+    return (await io.tokens.get(name)) !== undefined;
+  } catch {
+    return true;
+  }
+};
+
 // remove <name>. It removes the record and the token. A name with no record still has its token removed when one is
-// stored, because the add rollback tells the owner to run this command.
+// stored, because the add rollback tells the owner to run this command. Without --yes, a terminal asks first, and only y or
+// yes removes. Without a terminal and without --yes, the command is refused.
 const removeCommand = async (args: string[], io: CliIo): Promise<number> => {
-  const parsed = parseArgs(args, []);
+  const parsed = parseArgs(args, ["--yes"]);
   if (parsed === undefined || parsed.positional.length !== 1) {
     return usageError(io);
   }
@@ -247,6 +266,27 @@ const removeCommand = async (args: string[], io: CliIo): Promise<number> => {
   if (looksLikeToken(name)) {
     io.stderr(TOKEN_NOTE);
     return 2;
+  }
+  if (!parsed.flags.has("--yes")) {
+    if (!(io.stdinIsTerminal && io.stdoutIsTerminal)) {
+      io.stderr(REMOVE_NEEDS_YES);
+      return 2;
+    }
+    // A name with no account is not asked about. The removal below reports that it is unknown.
+    if (await accountExists(io, name)) {
+      let answer: string;
+      try {
+        answer = await io.flow.ask(`Remove the account ${name} and its stored token? Type y to remove: `);
+      } catch {
+        io.stdout(REMOVE_NO_ANSWER);
+        return 1;
+      }
+      const normalized = answer.trim().toLowerCase();
+      if (normalized !== "y" && normalized !== "yes") {
+        io.stdout(NOT_REMOVED);
+        return 0;
+      }
+    }
   }
   // The whole removal runs under the lock, and the registry is read again inside it.
   return withRegistryLock(io.registryFile, async () => {

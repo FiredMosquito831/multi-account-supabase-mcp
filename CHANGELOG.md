@@ -8,6 +8,7 @@ This project follows the format of [Keep a Changelog](https://keepachangelog.com
 
 - `add <name> --pat` adds an account. The token is typed in a terminal, with hidden input. Hidden input is not checked in a real terminal; see README.md.
 - `list`, `default <name>` and `remove <name>` manage the accounts.
+- `remove <name>` asks first in a terminal. Only `y` or `yes` (in any case, trimmed) removes the account. Any other answer removes nothing and exits 0. Without a terminal, `remove` needs `--yes`, and without it the command is refused with exit code 2. A name with no record and no stored token is reported at once, with no question. `--yes` skips the question.
 - The accounts file, which holds the account records and no token.
 - Every change to the accounts file runs under a lock file, `accounts.json.lock`.
 - A refused rename of the accounts file is retried, up to 10 tries in all.
@@ -34,7 +35,7 @@ This project follows the format of [Keep a Changelog](https://keepachangelog.com
 - `update [agent...]` runs again where the record lists an entry. For Codex, opencode and Antigravity, it rewrites the entry with the current Node program and command line program path (not verified against a real agent). For Claude Code, it runs `claude plugin update` (not verified: this command form), and the record keeps the current command line program path.
 - `uninstall [agent...]` removes what install recorded (not verified against a real agent). It keeps the accounts, the Claude Code marketplace and the backups, and it names them.
 - `doctor` checks each recorded scope, the recorded command line program path, and each account's token.
-- Options for the install commands: `--scope <scope>`, `--dry-run` and `--yes`. `--yes` is for install only. The scopes are `global`, `project` and `local`. `local` is for Claude Code only, and Antigravity has `global` only.
+- Options for the install commands: `--scope <scope>`, `--dry-run` and `--yes`. `--yes` is for install and remove only. The scopes are `global`, `project` and `local`. `local` is for Claude Code only, and Antigravity has `global` only.
 - For install, a plan with an error line is not applied, even with `--yes`. Update and uninstall also stop before any change when a step in the plan is an error line.
 - For Codex, opencode and Antigravity, an entry that this tool did not write is refused, not taken over. The Claude Code install does not check for an existing plugin.
 - One record file for each agent, in the `state` folder of the data folder. It holds what this tool wrote, and no token.

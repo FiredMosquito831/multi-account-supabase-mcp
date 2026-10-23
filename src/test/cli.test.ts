@@ -72,6 +72,8 @@ type Options = {
   adapters?: readonly AgentAdapter[];
   stdoutTerminal?: boolean;
   asked?: string[];
+  answers?: string[];
+  askFails?: boolean;
 };
 
 type Result = {
@@ -113,11 +115,21 @@ const fakeAgent = (id: AgentId, target: string, calls: string[]): AgentAdapter =
 };
 
 // The inputs of the install commands in these tests. The adapters are fakes, the runner refuses every command, and every
-// question is answered with a blank line and recorded, so no test runs an agent CLI or reads a real configuration.
-const flowEnvironment = (folder: string, adapters: readonly AgentAdapter[], asked: string[]): FlowEnvironment => ({
+// question is recorded. Answers come from the given list in turn, and a blank line is given when none is left. So no test
+// runs an agent CLI or reads a real configuration.
+const flowEnvironment = (
+  folder: string,
+  adapters: readonly AgentAdapter[],
+  asked: string[],
+  answers: string[] = [],
+  askFails = false,
+): FlowEnvironment => ({
   ask: async (question) => {
     asked.push(question);
-    return "";
+    if (askFails) {
+      throw new Error("input closed");
+    }
+    return answers.shift() ?? "";
   },
   cliPath: path.join(folder, "package", "dist", "cli.js"),
   packageRoot: path.join(folder, "package"),
@@ -157,7 +169,13 @@ const sessionIn = (folder: string) => {
         return options.profile ? options.profile(token) : WORK_PROFILE;
       },
       addedAt: () => ADDED_AT,
-      flow: flowEnvironment(folder, options.adapters ?? [], options.asked ?? []),
+      flow: flowEnvironment(
+        folder,
+        options.adapters ?? [],
+        options.asked ?? [],
+        [...(options.answers ?? [])],
+        options.askFails === true,
+      ),
       serve: async () => {
         counts.serveCalls += 1;
         if (options.serve) {
@@ -228,7 +246,7 @@ test("(c) the output of the commands (a), (b), (d), (e), (f) and (g) never holds
       await session.run(["list"]),
       await session.run(["default", "nobody"]),
       await session.run(["add", "work"]),
-      await session.run(["remove", "work"]),
+      await session.run(["remove", "work", "--yes"]),
     ];
     assert.deepEqual(
       results.map((result) => result.code),
@@ -263,7 +281,7 @@ test("(f) remove deletes the record and the token, and prints the removed line",
     const session = sessionIn(folder);
     const added = await session.run(["add", "work", "--pat"], { terminal: true, typed: TYPED });
     assert.equal(added.code, 0);
-    const result = await session.run(["remove", "work"]);
+    const result = await session.run(["remove", "work", "--yes"]);
     assert.equal(result.code, 0);
     assert.deepEqual(result.out, ['Removed "work".', TOKEN_STILL_WORKS]);
     assert.equal(await session.tokens.get("work"), undefined);
@@ -336,7 +354,7 @@ test("remove of a name with no record but a stored token deletes the token, prin
   inTempFolder(async (folder) => {
     const session = sessionIn(folder);
     await session.tokens.set("ghost", TYPED);
-    const result = await session.run(["remove", "ghost"]);
+    const result = await session.run(["remove", "ghost", "--yes"]);
     assert.equal(result.code, 0);
     assert.deepEqual(result.out, ['Removed "ghost".', TOKEN_STILL_WORKS]);
     assert.deepEqual(result.err, []);
@@ -345,7 +363,7 @@ test("remove of a name with no record but a stored token deletes the token, prin
 
 test("remove of a name with neither a record nor a token exits 1", () =>
   inTempFolder(async (folder) => {
-    const result = await sessionIn(folder).run(["remove", "nobody"]);
+    const result = await sessionIn(folder).run(["remove", "nobody", "--yes"]);
     assert.equal(result.code, 1);
     assert.deepEqual(result.err, ['Error: No account named "nobody".']);
     assert.deepEqual(result.out, []);
@@ -355,12 +373,12 @@ test("remove prints the token line after the removed line, for a removed record 
   inTempFolder(async (folder) => {
     const session = sessionIn(folder);
     await seed(session.file, ["work"]);
-    const withRecord = await session.run(["remove", "work"]);
+    const withRecord = await session.run(["remove", "work", "--yes"]);
     assert.equal(withRecord.code, 0);
     assert.deepEqual(withRecord.out, ['Removed "work".', TOKEN_STILL_WORKS]);
     assert.deepEqual(withRecord.err, []);
     await session.tokens.set("ghost", TYPED);
-    const tokenOnly = await session.run(["remove", "ghost"]);
+    const tokenOnly = await session.run(["remove", "ghost", "--yes"]);
     assert.equal(tokenOnly.code, 0);
     assert.deepEqual(tokenOnly.out, ['Removed "ghost".', TOKEN_STILL_WORKS]);
     assert.deepEqual(tokenOnly.err, []);
@@ -503,7 +521,7 @@ test("a removal whose token delete fails after the record is removed prints the 
     session.tokens.delete = async () => {
       throw new Error("keyring-internal-detail");
     };
-    const result = await session.run(["remove", "work"]);
+    const result = await session.run(["remove", "work", "--yes"]);
     assert.equal(result.code, 1);
     assert.deepEqual(result.err, [
       'Error: The account "work" was removed, but its stored token could not be deleted. Run: multi-account-supabase-mcp remove work',
@@ -520,7 +538,7 @@ test("a removal of a token with no record whose delete fails prints the second r
     session.tokens.delete = async () => {
       throw new Error("keyring-internal-detail");
     };
-    const result = await session.run(["remove", "ghost"]);
+    const result = await session.run(["remove", "ghost", "--yes"]);
     assert.equal(result.code, 1);
     assert.deepEqual(result.err, [
       'Error: The stored token for "ghost" could not be deleted. Run: multi-account-supabase-mcp remove ghost',
@@ -637,7 +655,7 @@ test("remove of a name with no record, when the token store cannot read it, prin
     session.tokens.get = async () => {
       throw new Error("keyring-internal-detail");
     };
-    const result = await session.run(["remove", "ghost"]);
+    const result = await session.run(["remove", "ghost", "--yes"]);
     assert.equal(result.code, 1);
     assert.deepEqual(result.err, [
       'Error: The stored token for "ghost" could not be read. Run: multi-account-supabase-mcp remove ghost',
@@ -667,7 +685,7 @@ test("default, remove and add each print a lock file that could not be removed o
 
       const removing = sessionIn(path.join(folder, "remove"));
       await seed(removing.file, ["work", "play"]);
-      const removed = await removing.run(["remove", "play"]);
+      const removed = await removing.run(["remove", "play", "--yes"]);
       assert.equal(removed.code, 0);
       assert.deepEqual(removed.out, ['Removed "play".', TOKEN_STILL_WORKS]);
       assert.deepEqual(removed.err, [LOCK_NOT_REMOVED]);
@@ -933,6 +951,153 @@ test("add, default and remove with a switch given twice exit 2 with the usage er
     }
     assert.equal(await readFile(session.file, "utf8"), before);
     assert.equal(session.tokens.calls.get + session.tokens.calls.delete, 0);
+  }));
+
+const REMOVE_QUESTION = "Remove the account work and its stored token? Type y to remove: ";
+const REMOVE_NEEDS_YES = "remove needs --yes when there is no terminal to ask in. Nothing was removed.";
+
+test("remove without --yes and with no terminal is refused with exit 2, names no account content, and removes nothing", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work"]);
+    await session.tokens.set("work", TYPED);
+    const before = await readFile(session.file, "utf8");
+    const asked: string[] = [];
+    const result = await session.run(["remove", "work"], { terminal: false, asked });
+    assert.equal(result.code, 2);
+    assert.deepEqual(result.err, [REMOVE_NEEDS_YES]);
+    assert.deepEqual(result.out, []);
+    assert.deepEqual(asked, []);
+    assert.equal(await readFile(session.file, "utf8"), before);
+    assert.equal(await session.tokens.get("work"), TYPED);
+  }));
+
+test("remove in a terminal asks first, and y removes the account and its token", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work"]);
+    await session.tokens.set("work", TYPED);
+    const asked: string[] = [];
+    const result = await session.run(["remove", "work"], {
+      terminal: true,
+      stdoutTerminal: true,
+      asked,
+      answers: ["y"],
+    });
+    assert.equal(result.code, 0);
+    assert.deepEqual(asked, [REMOVE_QUESTION]);
+    assert.deepEqual(result.out, ['Removed "work".', TOKEN_STILL_WORKS]);
+    assert.deepEqual((await Registry.load(session.file)).names(), []);
+    assert.equal(await session.tokens.get("work"), undefined);
+  }));
+
+test("remove in a terminal removes nothing for any answer but y or yes, in any case and trimmed, and a decline exits 0", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work"]);
+    await session.tokens.set("work", TYPED);
+    for (const answer of ["", "n", "no", "yess"]) {
+      const result = await session.run(["remove", "work"], {
+        terminal: true,
+        stdoutTerminal: true,
+        answers: [answer],
+      });
+      assert.equal(result.code, 0, answer);
+      assert.deepEqual(result.out, ["Nothing was removed."], answer);
+      assert.deepEqual(result.err, [], answer);
+    }
+    assert.deepEqual((await Registry.load(session.file)).names(), ["work"]);
+    assert.equal(await session.tokens.get("work"), TYPED);
+    const accepted = await session.run(["remove", "work"], {
+      terminal: true,
+      stdoutTerminal: true,
+      answers: ["  YES  "],
+    });
+    assert.equal(accepted.code, 0);
+    assert.deepEqual(accepted.out, ['Removed "work".', TOKEN_STILL_WORKS]);
+  }));
+
+test("a Ctrl+C at the remove question removes nothing, prints that no answer was read, and exits 1", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work"]);
+    await session.tokens.set("work", TYPED);
+    const result = await session.run(["remove", "work"], { terminal: true, stdoutTerminal: true, askFails: true });
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.out, ["No answer could be read, so nothing was removed."]);
+    assert.deepEqual((await Registry.load(session.file)).names(), ["work"]);
+    assert.equal(await session.tokens.get("work"), TYPED);
+  }));
+
+test("remove --yes removes without a question, in a terminal and with no terminal", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work", "play"]);
+    await session.tokens.set("work", TYPED);
+    await session.tokens.set("play", TYPED);
+    const asked: string[] = [];
+    const inTerminal = await session.run(["remove", "work", "--yes"], { terminal: true, stdoutTerminal: true, asked });
+    assert.equal(inTerminal.code, 0);
+    const piped = await session.run(["remove", "play", "--yes"], { terminal: false, asked });
+    assert.equal(piped.code, 0);
+    assert.deepEqual(asked, []);
+    assert.deepEqual((await Registry.load(session.file)).names(), []);
+  }));
+
+test("remove with stdin a terminal and stdout a pipe does not ask, and follows the no-terminal rule", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work"]);
+    await session.tokens.set("work", TYPED);
+    const before = await readFile(session.file, "utf8");
+    const asked: string[] = [];
+    const result = await session.run(["remove", "work"], { terminal: true, stdoutTerminal: false, asked });
+    assert.equal(result.code, 2);
+    assert.deepEqual(result.err, [REMOVE_NEEDS_YES]);
+    assert.deepEqual(asked, []);
+    assert.equal(await readFile(session.file, "utf8"), before);
+    assert.equal(await session.tokens.get("work"), TYPED);
+  }));
+
+test("a terminal remove of an unknown name asks no question, prints No account named, exits 1, and writes nothing", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work"]);
+    const before = await readFile(session.file, "utf8");
+    const asked: string[] = [];
+    const result = await session.run(["remove", "ghost"], { terminal: true, stdoutTerminal: true, asked });
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err, ['Error: No account named "ghost".']);
+    assert.deepEqual(result.out, []);
+    assert.deepEqual(asked, []);
+    assert.equal(await readFile(session.file, "utf8"), before);
+    assert.equal(session.tokens.calls.delete, 0);
+    assert.equal(session.tokens.size(), 0);
+  }));
+
+test("remove with --yes given twice, or with an unknown switch, exits 2 with the usage error, and removes nothing", () =>
+  inTempFolder(async (folder) => {
+    const session = sessionIn(folder);
+    await seed(session.file, ["work"]);
+    for (const argv of [
+      ["remove", "work", "--yes", "--yes"],
+      ["remove", "work", "--bogus"],
+    ]) {
+      const result = await session.run(argv, { terminal: false });
+      assert.equal(result.code, 2, argv.join(" "));
+      assert.deepEqual(result.err, ["Usage error.", usageText], argv.join(" "));
+      assert.deepEqual(result.out, [], argv.join(" "));
+    }
+    assert.deepEqual((await Registry.load(session.file)).names(), ["work"]);
+  }));
+
+test("the remove line of the usage text says it asks first in a terminal and needs --yes without one", () =>
+  inTempFolder(async () => {
+    const line = usageText.split("\n").find((text) => text.includes("remove <name>"));
+    assert.equal(
+      line,
+      "  remove <name>         Remove an account and its stored token. Asks first in a terminal; needs --yes without one.",
+    );
   }));
 
 test("install --dry-run prints the plan, exits 0, and writes no file", () =>

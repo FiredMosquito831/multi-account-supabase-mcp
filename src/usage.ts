@@ -7,7 +7,7 @@ export const usageText = [
   "  add <name> --pat      Add an account. The token is typed in a terminal, and it is hidden.",
   "  list                  List the accounts. The default is marked with an asterisk.",
   "  default <name>        Make an account the default.",
-  "  remove <name>         Remove an account and its stored token.",
+  "  remove <name>         Remove an account and its stored token. Asks first in a terminal; needs --yes without one.",
   "  install [agent...]    Add the server to the named agents, or to all agents. Needs --yes without a terminal.",
   "  update [agent...]     Update the installed entries and the recorded command line path.",
   "  uninstall [agent...]  Remove what install recorded. The accounts and the Claude marketplace stay.",
@@ -20,5 +20,5 @@ export const usageText = [
   "                        Install uses global when none is given. Update and uninstall",
   "                        act on global and on this folder's project and local scopes, where a record exists, if none is given.",
   "  --dry-run             Show the plan and change nothing.",
-  "  --yes                 Install only: apply the plan without asking.",
+  "  --yes                 Install and remove only: apply without asking.",
 ].join("\n");
