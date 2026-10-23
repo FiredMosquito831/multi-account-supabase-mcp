@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { saveHooks } from "../accounts/registry.js";
 import type { Runner } from "../agents/command.js";
 import { opencodeAdapter, opencodeGlobalDir } from "../agents/opencode.js";
 import { runPlan } from "../agents/plan.js";
@@ -168,6 +169,30 @@ const failingFolderRemoval = (): FileOps => ({
   },
 });
 
+// Runs a step while every write of the state file fails, so a record cannot be written. The hook is put back afterwards.
+const withFailingRename = async <T>(run: () => Promise<T>): Promise<T> => {
+  const real = { ...saveHooks };
+  saveHooks.rename = async () => {
+    throw Object.assign(new Error("EIO: input/output error, rename"), { code: "EIO" });
+  };
+  try {
+    return await run();
+  } finally {
+    Object.assign(saveHooks, real);
+  }
+};
+
+// The same file functions, except that creating the target folder fails with a permission error.
+const failingFolderCreation = (target: string): FileOps => ({
+  ...recordingFiles([]),
+  ensureDir: async (dir) => {
+    if (dir === target) {
+      throw Object.assign(new Error("simulated permission failure"), { code: "EACCES" });
+    }
+    await mkdir(dir, { recursive: true });
+  },
+});
+
 // The same file functions. Each write is logged, with "recorded" when the file is on the record at the time of the write.
 const orderedFiles = (log: string[], key: string): FileOps => ({
   ...recordingFiles([]),
@@ -247,6 +272,7 @@ test("a global install into an empty configuration folder creates opencode.json 
       { kind: "directory", path: globalFolderIn(root) },
       { kind: "file", path: file, createdByUs: true },
       { kind: "json-entry", path: file, pointer: POINTER },
+      { kind: "server", cliPath: programIn(root) },
     ]);
   }));
 
@@ -268,6 +294,7 @@ test("install keeps another server and another top-level key unchanged, and repl
     assert.deepEqual(await recordedItems("opencode", scopeKey("project", projectIn(root))), [
       { kind: "file", path: file, createdByUs: true },
       { kind: "json-entry", path: file, pointer: POINTER },
+      { kind: "server", cliPath: programIn(root) },
       { kind: "file", path: `${file}.bak`, createdByUs: true },
     ]);
   }));
@@ -470,6 +497,7 @@ test("install then update each record the backup they take, and uninstall keeps 
     assert.equal((await opencodeAdapter.update(contextIn(root), "global"))[0].status, "ok");
     assert.deepEqual(await recordedItems("opencode", "global"), [
       { kind: "json-entry", path: file, pointer: POINTER },
+      { kind: "server", cliPath: programIn(root) },
       { kind: "file", path: firstBackup, createdByUs: true },
       { kind: "file", path: secondBackup, createdByUs: true },
     ]);
@@ -731,6 +759,7 @@ test("install into a scope with an entry recorded writes that file again, so one
       { kind: "directory", path: path.dirname(fileA) },
       { kind: "file", path: fileA, createdByUs: true },
       { kind: "json-entry", path: fileA, pointer: POINTER },
+      { kind: "server", cliPath: programIn(root) },
       { kind: "file", path: `${fileA}.bak`, createdByUs: true },
     ]);
   }));
@@ -1293,6 +1322,168 @@ test("install replaces a recorded entry this tool wrote, keeps the other keys, a
     assert.equal(steps[0].status, "ok");
     assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { theme: "dark", mcp: { [NAME]: entryIn(root) } });
     assert.equal(await readFile(`${file}.bak`, "utf8"), before);
+  }));
+
+test("an entry with an environment key is edited: install, update and uninstall leave it in place with its record, and the step is an error", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    const recorded = await recordedItems("opencode", "global");
+    for (const key of ["environment", "env"]) {
+      const text = `${JSON.stringify({ mcp: { [NAME]: { ...entryIn(root), [key]: { TOKEN: "owner-value" } } } }, null, 2)}\n`;
+      await writeFile(file, text);
+      for (const action of [opencodeAdapter.install, opencodeAdapter.update, opencodeAdapter.uninstall]) {
+        const steps = await action(contextIn(root), "global");
+        assert.equal(steps[0].status, "error", key);
+        assert.equal(steps[0].message.includes("was edited, so it was left in place"), true, key);
+        assert.equal(steps[0].message.includes("The record stays until then."), true, key);
+        assert.equal(await readFile(file, "utf8"), text, key);
+        assert.deepEqual(await recordedItems("opencode", "global"), recorded, key);
+      }
+    }
+    await forget("opencode", "global");
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("a changed command, type or enabled flag makes the entry edited, and install leaves it in place", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    const recorded = await recordedItems("opencode", "global");
+    const changed: [string, Record<string, unknown>][] = [
+      ["command", { ...entryIn(root), command: [process.execPath, path.join(root, "other-cli.js"), "serve"] }],
+      ["type", { ...entryIn(root), type: "remote" }],
+      ["enabled", { ...entryIn(root), enabled: false }],
+    ];
+    for (const [field, entry] of changed) {
+      const text = `${JSON.stringify({ mcp: { [NAME]: entry } }, null, 2)}\n`;
+      await writeFile(file, text);
+      const steps = await opencodeAdapter.install(contextIn(root), "global");
+      assert.equal(steps[0].status, "error", field);
+      assert.equal(steps[0].message.includes("was edited, so it was left in place"), true, field);
+      assert.equal(await readFile(file, "utf8"), text, field);
+      assert.deepEqual(await recordedItems("opencode", "global"), recorded, field);
+    }
+    await forget("opencode", "global");
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("an entry with an unrelated extra key is not edited: install replaces it, and uninstall removes it", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    const withExtra = `${JSON.stringify({ mcp: { [NAME]: { ...entryIn(root), timeout: 5000 } } }, null, 2)}\n`;
+    await writeFile(file, withExtra);
+    const replaced = await opencodeAdapter.install(contextIn(root), "global");
+    assert.equal(replaced[0].status, "ok");
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { mcp: { [NAME]: entryIn(root) } });
+    assert.equal(await readFile(`${file}.bak`, "utf8"), withExtra);
+    await writeFile(file, withExtra);
+    const removed = await opencodeAdapter.uninstall(contextIn(root), "global");
+    assert.equal(removed[0].status, "ok");
+    assert.equal(existsSync(file), false);
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("when a folder cannot be created, the record does not list it, and the folder is not left behind", () =>
+  inTemporaryRoot(async (root) => {
+    const folder = globalFolderIn(root);
+    await assert.rejects(
+      opencodeAdapter.install(contextIn(root, { fs: failingFolderCreation(folder) }), "global"),
+      /simulated permission failure/,
+    );
+    assert.deepEqual(await recordedItems("opencode", "global"), []);
+    assert.equal(existsSync(path.join(root, "config")), false);
+  }));
+
+test("a moved Node path is not an edit: update rewrites the entry with the current command", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    const movedNode = path.join(root, "moved", "node");
+    const moved = `${JSON.stringify({ mcp: { [NAME]: { type: "local", command: [movedNode, programIn(root), "serve"], enabled: true } } }, null, 2)}\n`;
+    await writeFile(file, moved);
+    const steps = await opencodeAdapter.update(contextIn(root), "global");
+    assert.equal(steps[0].status, "ok");
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { mcp: { [NAME]: entryIn(root) } });
+  }));
+
+test("a relative command is edited: install leaves the entry in place, keeps its record, and the step is an error", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    const relative = `${JSON.stringify({ mcp: { [NAME]: { type: "local", command: ["node", programIn(root), "serve"], enabled: true } } }, null, 2)}\n`;
+    await writeFile(file, relative);
+    const recorded = await recordedItems("opencode", "global");
+    const steps = await opencodeAdapter.install(contextIn(root), "global");
+    assert.equal(steps[0].status, "error");
+    assert.equal(steps[0].message.includes("was edited, so it was left in place"), true);
+    assert.equal(await readFile(file, "utf8"), relative);
+    assert.deepEqual(await recordedItems("opencode", "global"), recorded);
+    await forget("opencode", "global");
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("a changed argument is edited: install, update and uninstall leave the entry in place, keep the record, and the step is an error", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    const changed = `${JSON.stringify({ mcp: { [NAME]: { ...entryIn(root), command: [process.execPath, path.join(root, "other-cli.js"), "serve"] } } }, null, 2)}\n`;
+    await writeFile(file, changed);
+    const recorded = await recordedItems("opencode", "global");
+    for (const action of [opencodeAdapter.install, opencodeAdapter.update, opencodeAdapter.uninstall]) {
+      const steps = await action(contextIn(root), "global");
+      assert.equal(steps[0].status, "error");
+      assert.equal(steps[0].message.includes("was edited, so it was left in place"), true);
+      assert.equal(await readFile(file, "utf8"), changed);
+      assert.deepEqual(await recordedItems("opencode", "global"), recorded);
+    }
+    await forget("opencode", "global");
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("an environment key with an empty value is not an edit, and a non-empty one is", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    assert.equal((await opencodeAdapter.install(contextIn(root), "global"))[0].status, "ok");
+    await writeFile(file, `${JSON.stringify({ mcp: { [NAME]: { ...entryIn(root), environment: {} } } }, null, 2)}\n`);
+    const replaced = await opencodeAdapter.install(contextIn(root), "global");
+    assert.equal(replaced[0].status, "ok");
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { mcp: { [NAME]: entryIn(root) } });
+    const filled = `${JSON.stringify({ mcp: { [NAME]: { ...entryIn(root), environment: { TOKEN: "owner-value" } } } }, null, 2)}\n`;
+    await writeFile(file, filled);
+    const steps = await opencodeAdapter.install(contextIn(root), "global");
+    assert.equal(steps[0].status, "error");
+    assert.equal(await readFile(file, "utf8"), filled);
+    await forget("opencode", "global");
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("with no recorded program path, an entry that matches what this tool writes is edited: install, update and uninstall leave it in place", () =>
+  inTemporaryRoot(async (root) => {
+    const file = globalFileIn(root);
+    const text = `${JSON.stringify({ mcp: { [NAME]: entryIn(root) } }, null, 2)}\n`;
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, text);
+    await record("opencode", "global", { kind: "json-entry", path: file, pointer: POINTER });
+    for (const action of [opencodeAdapter.install, opencodeAdapter.update, opencodeAdapter.uninstall]) {
+      const steps = await action(contextIn(root), "global");
+      assert.equal(steps[0].status, "error");
+      assert.equal(steps[0].message.includes("was edited, so it was left in place"), true);
+      assert.equal(await readFile(file, "utf8"), text);
+    }
+    await forget("opencode", "global");
+    await unrecordedEntryStays(root, "global");
+  }));
+
+test("when a record cannot be written after a folder was made, the folder is removed again and no record lists it", () =>
+  inTemporaryRoot(async (root) => {
+    await assert.rejects(
+      withFailingRename(() => opencodeAdapter.install(contextIn(root), "global")),
+      /EIO/,
+    );
+    assert.equal(existsSync(path.join(root, "config")), false);
+    assert.deepEqual(await recordedItems("opencode", "global"), []);
   }));
 
 test("install writes a backup after it is recorded, and writes the file after the backup", () =>

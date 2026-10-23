@@ -2,7 +2,7 @@ import type { Stats } from "node:fs";
 import { lstat, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { ensureFolders, foldersToMake, isFolder, removeRecordedFolders } from "./folders.js";
+import { ensureFolders, isFolder, removeRecordedFolders } from "./folders.js";
 import { DIRECT_KEY, directEntry, type Scope, supportedScopes } from "./scopes.js";
 import { forget, type Item, record, recordedItems, scopeKey } from "./state.js";
 import { type AgentAdapter, type Context, type Step, UnsupportedScope } from "./types.js";
@@ -27,9 +27,13 @@ import { type AgentAdapter, type Context, type Step, UnsupportedScope } from "./
 // uninstall keeps every backup that is still on disk and names it, unless it stops before it reads the backups. The folders
 // this tool makes are recorded too, and uninstall removes them, deepest first, only when they are empty. The project folder
 // belongs to the owner: install and update refuse it when it does not exist, and uninstall never removes it. Every read of the
-// environment comes from the context, so a config home or a home given there is used. Install, update and uninstall act only on
-// an entry whose command is the one this tool writes. An entry that differs is left in place with its record, and the step is
-// an error that says how to remove it by hand. An unedited recorded entry is replaced by install, after a backup.
+// environment comes from the context, so a config home or a home given there is used. Install, update and uninstall act only on an
+// entry that is not edited. An entry is edited when its arguments are not the recorded program path followed by serve, its command
+// is not an absolute path, its type or enabled flag differs, or it has a non-empty environment or env key. A moved Node path is not
+// an edit, and update rewrites the entry with the current command. An edited entry is left in place with its record, and the step
+// is an error that says how to remove it by hand. Other keys are not compared, so a default the CLI adds is not an edit. An
+// unedited recorded entry is replaced by install, after a backup. A folder is recorded once it exists, and it is removed again
+// when a record cannot be written after it was made.
 
 type ActiveScope = "global" | "project";
 
@@ -515,11 +519,99 @@ const entryFor = (ctx: Context): Doc => {
   return { type: "local", command: [command, ...args], enabled: true };
 };
 
+// The program path that the record names for a scope, which install writes after it adds the entry. Undefined when the record
+// names none, so the entry is then edited.
+const recordedProgram = (items: readonly Item[]): string | undefined => {
+  const server = items.find((item) => item.kind === "server");
+  return server?.kind === "server" ? server.cliPath : undefined;
+};
+
+// An environment value that is empty holds nothing, so it does not make the entry edited. A missing value, null, an empty string
+// and an empty table are empty.
+const isEmptyValue = (value: unknown): boolean =>
+  value === undefined ||
+  value === null ||
+  value === "" ||
+  (typeof value === "object" && value !== null && Object.keys(value).length === 0);
+
+// Whether the entry is the one this tool wrote, so that install, update and uninstall may act on it. It is edited, and so not this
+// tool's, when one of these holds:
+// - it is not a table, or its type or enabled flag is not the ones this tool writes;
+// - its arguments are not the recorded program path followed by "serve". With no recorded program path the entry is edited, so the
+//   check fails closed;
+// - its command is not an absolute path;
+// - it has an environment or env key whose value is not empty, because a token may sit there.
+// The command is not compared with the Node path of this run, so a moved Node path does not make the entry edited, and update
+// rewrites the entry with the current command. Other keys, such as ones the CLI may add, are not compared.
+const holdsEntry = (entry: unknown, recorded: string | undefined): boolean => {
+  if (!isObject(entry) || recorded === undefined) {
+    return false;
+  }
+  const command = entry.command;
+  if (!Array.isArray(command) || command.length === 0 || !command.every((part) => typeof part === "string")) {
+    return false;
+  }
+  const [program, ...args] = command as string[];
+  let expected: readonly string[];
+  try {
+    expected = directEntry(recorded).args;
+  } catch {
+    return false;
+  }
+  return (
+    entry.type === "local" &&
+    entry.enabled === true &&
+    path.isAbsolute(program) &&
+    isDeepStrictEqual(args, expected) &&
+    isEmptyValue(entry.environment) &&
+    isEmptyValue(entry.env)
+  );
+};
+
 // The text for an edited entry, in install, update and uninstall alike. Each of them leaves the entry in place, and the text says
 // how to remove it by hand. The record stays until the owner removes the entry. The wording follows Codex's text for a global
 // entry that was edited.
 const editedText = (file: string): string =>
-  `The entry ${DIRECT_KEY} was edited, so it was left in place. To remove it, delete the entry named ${DIRECT_KEY} by hand from the opencode configuration file (the "${TABLE}" section) in ${file}. Then run this command again. The record stays until then.`;
+  `The entry ${DIRECT_KEY} was edited, so it was left in place. To remove it, delete the entry by hand: the entry named ${DIRECT_KEY} in the opencode configuration file ${file} (the "${TABLE}" section). Then run this command again. The record stays until then.`;
+
+// Drops from the record the folders of the list that are no longer on disk, and keeps every other item. A folder that is still on
+// disk keeps its record, because this tool made it.
+const dropAbsentFolders = async (ctx: Context, key: string, folders: readonly string[]): Promise<void> => {
+  const absent: string[] = [];
+  for (const folder of folders) {
+    if (!(await isFolder(folder))) {
+      absent.push(folder);
+    }
+  }
+  if (absent.length === 0) {
+    return;
+  }
+  const current = await recordedItems("opencode", key, undefined, ctx.env);
+  await forget("opencode", key, undefined, ctx.env);
+  for (const item of current) {
+    if (!(item.kind === "directory" && absent.includes(item.path))) {
+      await record("opencode", key, item, undefined, ctx.env);
+    }
+  }
+};
+
+// Puts back the folders that this run made, when a record cannot be written after they were made. Each one is removed, deepest
+// first, only when it is empty, and the records of the folders that are gone are dropped. The error is returned for the caller to
+// throw. When the folders cannot be put back, the error says so, so the record is not left without a word, as Codex does.
+const undoMadeFolders = async (ctx: Context, key: string, made: readonly string[], error: unknown): Promise<unknown> => {
+  try {
+    for (const folder of [...made].reverse()) {
+      await ctx.removeDirIfEmpty(folder);
+    }
+    await dropAbsentFolders(ctx, key, made);
+    return error;
+  } catch (undoError) {
+    return new Error(
+      `The record could not be written (${codeOf(error)}), and the folders this run made could not be put back (${codeOf(undoError)}).`,
+      { cause: error },
+    );
+  }
+};
 
 const installIn = async (ctx: Context, scope: ActiveScope): Promise<Step> => {
   const target = await targetOf(ctx, scope);
@@ -543,13 +635,11 @@ const installIn = async (ctx: Context, scope: ActiveScope): Promise<Step> => {
   }
   // A recorded entry that differs from the one this tool writes, for example one that someone edited, is never replaced. It is
   // left in place with its record, and the step is an error.
-  if (
-    target.recorded &&
-    loaded.kind === "ok" &&
-    entryOf(loaded.doc) !== undefined &&
-    !isDeepStrictEqual(entryOf(loaded.doc), entryFor(ctx))
-  ) {
-    return step(scope, "error", editedText(file));
+  if (target.recorded && loaded.kind === "ok" && entryOf(loaded.doc) !== undefined) {
+    const items = await recordedItems("opencode", key, undefined, ctx.env);
+    if (!holdsEntry(entryOf(loaded.doc), recordedProgram(items))) {
+      return step(scope, "error", editedText(file));
+    }
   }
   const before: Doc = loaded.kind === "ok" ? loaded.doc : {};
   // An entry under our key is ours only when the record lists it. Any other entry is refused, and never taken over. The
@@ -571,29 +661,30 @@ const installIn = async (ctx: Context, scope: ActiveScope): Promise<Step> => {
   // A backup takes the first free name. The name is chosen before the first change, so the step can name it.
   const backup = loaded.kind === "ok" ? await freeBackupName(file) : undefined;
   const base = baseOf(scope, folder);
-  // The folders ensureFolders would make, parents first, that do not exist yet. Each one is recorded before any is made.
-  const made: string[] = [];
-  for (const planned of await foldersToMake(base, folder)) {
-    if (!(await isFolder(planned))) {
-      made.push(planned);
-    }
-  }
-  // Each record is written before the change it describes, so a change that fails leaves records that describe nothing
+  // The folders are made first. When one of them cannot be made, ensureFolders removes the ones it made and throws, so a failed
+  // creation leaves no record. A folder is recorded once it exists, as Codex does. A dry run makes none.
+  const made = await ensureFolders(ctx, base, folder);
+  // Each record is written before the file change it describes, so a change that fails leaves records that describe nothing
   // that exists. A dry run records nothing.
   if (!ctx.dryRun) {
-    for (const folderToMake of made) {
-      await record("opencode", key, { kind: "directory", path: folderToMake }, undefined, ctx.env);
-    }
-    if (loaded.kind === "missing") {
-      // The file did not exist before, so this tool creates it, and uninstall may remove it.
-      await record("opencode", key, { kind: "file", path: file, createdByUs: true }, undefined, ctx.env);
-    }
-    await record("opencode", key, { kind: "json-entry", path: file, pointer: ENTRY_POINTER }, undefined, ctx.env);
-    if (backup !== undefined) {
-      await record("opencode", key, { kind: "file", path: backup, createdByUs: true }, undefined, ctx.env);
+    try {
+      for (const folderMade of made) {
+        await record("opencode", key, { kind: "directory", path: folderMade }, undefined, ctx.env);
+      }
+      if (loaded.kind === "missing") {
+        // The file did not exist before, so this tool creates it, and uninstall may remove it.
+        await record("opencode", key, { kind: "file", path: file, createdByUs: true }, undefined, ctx.env);
+      }
+      await record("opencode", key, { kind: "json-entry", path: file, pointer: ENTRY_POINTER }, undefined, ctx.env);
+      // The program path is recorded, so that a later install, update or uninstall can tell this tool's entry from an edited one.
+      await record("opencode", key, { kind: "server", cliPath: ctx.cliPath }, undefined, ctx.env);
+      if (backup !== undefined) {
+        await record("opencode", key, { kind: "file", path: backup, createdByUs: true }, undefined, ctx.env);
+      }
+    } catch (error) {
+      throw await undoMadeFolders(ctx, key, made, error);
     }
   }
-  await ensureFolders(ctx, base, folder);
   if (loaded.kind === "ok" && backup !== undefined) {
     try {
       await ctx.writeFile(backup, loaded.text);
@@ -652,7 +743,7 @@ const uninstallIn = async (ctx: Context, scope: ActiveScope, progress: Progress)
   }
   // An entry that differs from the one this tool writes, for example one that someone edited, is kept with its record. Nothing
   // is removed, so the record stays as it is.
-  if (loaded.kind === "ok" && entryOf(loaded.doc) !== undefined && !isDeepStrictEqual(entryOf(loaded.doc), entryFor(ctx))) {
+  if (loaded.kind === "ok" && entryOf(loaded.doc) !== undefined && !holdsEntry(entryOf(loaded.doc), recordedProgram(items))) {
     return step(scope, "error", `${editedText(file)}${backupsKept(ctx.dryRun, kept)}`);
   }
   // The config file goes only when this tool created it. The folders the record lists on the way to the folder go with it,
