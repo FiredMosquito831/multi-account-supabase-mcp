@@ -4,9 +4,9 @@
 // With no arguments it starts the MCP server (`serve`), which is how .mcp.json uses it. With arguments it runs that
 // CLI command, which is how the plugin's slash commands use it (for example `list` or `doctor`).
 //
-// If the command is on PATH (npm install -g multi-account-supabase-mcp), it is used, so the plugin and the installed
-// CLI are the same copy. Otherwise the same version is run from npm with npx. The server speaks MCP on stdout, so this
-// file never writes to stdout. It writes its own messages to stderr only.
+// If the command is on PATH (npm install -g multi-account-supabase-mcp), it is used, whatever its version: the launcher
+// does not compare it with the plugin's version. Otherwise the plugin's version is run from npm with npx. The server
+// speaks MCP on stdout, so this file never writes to stdout. It writes its own messages to stderr only.
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import os from 'node:os';
@@ -165,5 +165,8 @@ if (isEntryFile(process.argv[1], fileURLToPath(import.meta.url), windows)) {
     stderr: process.stderr,
     tmpdir: os.tmpdir(),
     readPackageName: packageNameIn,
-  }).then((code) => process.exit(code));
+  }).then((code) => {
+    // The exit code is set, not passed to exit, so that stderr can finish writing before the process ends.
+    process.exitCode = code;
+  });
 }

@@ -16,8 +16,8 @@ const REFUSAL = `${PACKAGE}: refused an argument with spaces or shell characters
 const COULD_NOT_START_NPX = `${PACKAGE} could not start: npx was not found on PATH. Node.js and npm must be installed.\n`;
 const SIGNALS = ["SIGINT", "SIGTERM"] as const;
 const WINDOWS = process.platform === "win32";
-// Any use of stdout or the console. The launcher's file must match none of these.
-const STDOUT_OR_CONSOLE = /process\.stdout|console\./;
+// The forms that write to stdout or the console, as text. The launcher's file must match none of them.
+const STDOUT_PATTERN = /process\.stdout|process\[|console[.\[]|writeSync\(\s*1/;
 
 type SpawnOptions = { stdio?: string; cwd?: string; shell?: boolean };
 type SpawnCall = { command: string; args: string[] | undefined; options: SpawnOptions };
@@ -118,6 +118,7 @@ test("with arguments, the installed command runs them and no shell is used", asy
   assert.notEqual(calls[0].options.shell, true);
 });
 
+// The literal is updated on each version bump, so a bump fails this test on purpose.
 test("the plugin version read from the real plugin.json is 0.1.0, as the file is written now", async () => {
   const { pluginVersion } = await load();
   assert.equal(pluginVersion(PLUGIN_ROOT), "0.1.0");
@@ -488,14 +489,31 @@ test("isEntryFile matches a drive letter written in the other case, on Windows",
   assert.equal(isEntryFile(flipped, LAUNCHER_PATH, true), true);
 });
 
-test("the stdout check catches console.info, console.debug, console.dir and console.table", () => {
-  for (const sample of ["console.info('x')", "console.debug('x')", "console.dir(x)", "console.table(x)", "process.stdout.write('x')", "console.log('x')"]) {
-    assert.equal(STDOUT_OR_CONSOLE.test(sample), true, sample);
+test("the stdout pattern catches each form that writes to stdout or the console", () => {
+  for (const sample of [
+    "process.stdout.write('x')",
+    "process['stdout'].write('x')",
+    'process["stdout"].write("x")',
+    "console.log('x')",
+    "console.info('x')",
+    "console['log']('x')",
+    "fs.writeSync(1, 'x')",
+    "fs.writeSync( 1, 'x')",
+  ]) {
+    assert.equal(STDOUT_PATTERN.test(sample), true, sample);
   }
-  assert.equal(STDOUT_OR_CONSOLE.test("process.stderr.write('x')"), false);
+  for (const other of ["process.stderr.write('x')", "fs.writeSync(2, 'x')", "const stdout = 1"]) {
+    assert.equal(STDOUT_PATTERN.test(other), false, other);
+  }
 });
 
-test("the launcher file never writes to stdout or the console", async () => {
+test("the launcher file contains no match for the stdout pattern", () => {
   const text = readFileSync(LAUNCHER_PATH, "utf8");
-  assert.equal(STDOUT_OR_CONSOLE.test(text), false);
+  assert.equal(STDOUT_PATTERN.test(text), false, "launch.mjs has a form that writes to stdout or the console");
+});
+
+test("the entry point ends by setting the exit code, not by calling process.exit", () => {
+  const text = readFileSync(LAUNCHER_PATH, "utf8");
+  assert.equal(/process\.exit\(/.test(text), false, "launch.mjs calls process.exit");
+  assert.match(text, /process\.exitCode = code;/);
 });

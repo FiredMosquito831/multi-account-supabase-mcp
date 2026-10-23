@@ -1,6 +1,5 @@
 {
   "name": "multi-account-supabase",
-  "displayName": "Multi-account Supabase",
   "version": "0.1.0",
   "description": "Supabase MCP tools for several accounts: projects, databases, functions, branches, debugging and docs, sent to one account, a list, or all of them. An add-on to the multi-account-supabase-mcp npm package: it runs the installed copy when there is one, and the same version from npm otherwise.",
   "author": { "name": "FiredMosquito831" },

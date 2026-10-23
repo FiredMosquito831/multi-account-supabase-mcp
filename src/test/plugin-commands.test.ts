@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { usageText } from "../usage.js";
 
 // This file runs from dist/test, so two levels up is the repository root.
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -145,4 +146,43 @@ test("remove-account.md says the CLI asks in the terminal before it removes, and
 
 test("add-account.md names the --pat option", () => {
   assert.ok(readCommand("add-account").includes("--pat"));
+});
+
+// The command names the CLI usage text lists: two spaces, then the name, in the Commands section.
+const listedCommands = (usage: string): string[] => {
+  const section = usage.slice(usage.indexOf("Commands:"), usage.indexOf("Options for"));
+  return section.split("\n").flatMap((line) => {
+    const name = /^ {2}([a-z][a-z-]*)\b/.exec(line)?.[1];
+    return name === undefined ? [] : [name];
+  });
+};
+
+// The verb a terminal line runs: the word after the package version.
+const terminalVerbs = (name: string): string[] =>
+  terminalLines(readCommand(name)).map((line) => line.slice(PREFIX.length).split(" ")[1]);
+
+// The verb a ! line runs: the word after launch.mjs, before the closing backtick.
+const bangVerb = (name: string): string | undefined => {
+  const line = readCommand(name).split(/\r?\n/).find((item) => item.startsWith("!"));
+  return /launch\.mjs" ([a-z]+)`$/.exec(line ?? "")?.[1];
+};
+
+// The verbs that the usage text does not list. An undefined verb is never listed.
+const unlisted = (verbs: (string | undefined)[], listed: string[]): (string | undefined)[] =>
+  verbs.filter((verb) => verb === undefined || !listed.includes(verb));
+
+test("every verb the command files run is listed in the CLI usage text", () => {
+  const verbs = [
+    ...terminalVerbs("add-account"),
+    ...terminalVerbs("set-default"),
+    ...terminalVerbs("remove-account"),
+    bangVerb("accounts"),
+    bangVerb("doctor"),
+  ];
+  assert.equal(verbs.length, 5, "the three terminal lines and the two ! lines were all found");
+  assert.deepEqual(unlisted(verbs, listedCommands(usageText)), [], "every verb is in the usage text");
+});
+
+test("the verb check reports a verb the usage text does not list", () => {
+  assert.deepEqual(unlisted(["add", "bogus", undefined], listedCommands(usageText)), ["bogus", undefined]);
 });

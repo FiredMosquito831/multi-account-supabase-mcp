@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SKILL_FILE, SKILL_NAME } from "../agents/skill.js";
@@ -48,4 +48,31 @@ test("every multi-account-supabase-mcp@ version in the skill is the plugin versi
       assert.equal(match[1], pluginVersion, `${file} names the plugin version`);
     }
   }
+});
+
+// Every file under a folder, as paths from the repository root. Nothing is excluded.
+const walk = (dir: string): string[] =>
+  readdirSync(join(root, dir)).flatMap((entry) => {
+    const child = `${dir}/${entry}`;
+    return statSync(join(root, child)).isDirectory() ? walk(child) : [child];
+  });
+
+// The two token shapes: sbp_ with a letter or digit after it, and 24 or more letters and digits in a row with no
+// space. A match is never printed, only the name of the file it is in.
+const TOKEN_SHAPES = [/sbp_[A-Za-z0-9]/, /[A-Za-z0-9]{24,}/];
+const hasTokenShape = (text: string): boolean => TOKEN_SHAPES.some((shape) => shape.test(text));
+
+test("the token shapes match the samples they should, and no others", () => {
+  assert.equal(hasTokenShape("sbp_abc123"), true);
+  assert.equal(hasTokenShape("x".repeat(24)), true);
+  assert.equal(hasTokenShape("x".repeat(23)), false);
+  assert.equal(hasTokenShape("sbp_ and words-with_under_scores 0.1.0"), false);
+});
+
+test("no file under the plugin folder has a token-shaped string, and the walk reaches the plugin files", () => {
+  const files = walk(PLUGIN_DIR);
+  assert.ok(files.includes(`${PLUGIN_DIR}/.claude-plugin/plugin.json`), "the walk reaches the manifest");
+  assert.ok(files.includes(`${PLUGIN_DIR}/bin/launch.mjs`), "the walk reaches the launcher");
+  const offenders = files.filter((file) => hasTokenShape(readFileSync(join(root, file), "utf8")));
+  assert.deepEqual(offenders, [], "files with a token-shaped string (names only)");
 });
