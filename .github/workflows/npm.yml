@@ -5,10 +5,12 @@
 # It has no push trigger. The version bump commit carries [skip ci], which GitHub uses to skip
 # every workflow on that commit, so a push to main cannot start this workflow. A version bump
 # is followed by a release, and the release is the only trigger.
-# It publishes only when all of these hold:
+# It publishes only when both of these hold:
 #   1. The repository is FiredMosquito831/multi-account-supabase-mcp (the `if:` on the jobs).
 #   2. The maintainer has created the trusted publisher on npmjs.com. That is not done yet.
-#   3. The maintainer gives the go-ahead for the release step, by name.
+# Creating a published release is the maintainer's go-ahead for the publish that it starts.
+# The workflow checks the repository and the tag only. It does not check the npm registry,
+# the trusted publisher, or the licence.
 # The first publish is the maintainer's, from a terminal (see docs/RELEASING.md).
 # This workflow does not replace that step.
 #
@@ -34,6 +36,8 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -43,6 +47,8 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
+      - name: Pack dry run
+        run: npm pack --dry-run
 
   check-version:
     name: Check that the release tag is the version
@@ -54,6 +60,8 @@ jobs:
       publish: ${{ steps.decide.outputs.publish }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Decide whether this run publishes
         id: decide
         shell: bash
@@ -81,6 +89,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22

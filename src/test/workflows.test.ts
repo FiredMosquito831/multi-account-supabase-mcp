@@ -33,6 +33,44 @@ function hasRunStep(text: string, command: string): boolean {
   return new RegExp(`^\\s*(?:-\\s+)?run:\\s*${escaped}\\s*$`, "m").test(text);
 }
 
+// Every workflow file, .yml or .yaml.
+function workflowFiles(): string[] {
+  assert.ok(existsSync(workflowDir), "the .github/workflows folder must exist");
+  return readdirSync(workflowDir).filter((name) => /\.ya?ml$/.test(name));
+}
+
+// The entries of each `permissions:` block, as trimmed lines (for example "contents: read").
+function permissionEntries(text: string): string[] {
+  const lines = text.split(/\r?\n/);
+  const entries: string[] = [];
+  lines.forEach((line, index) => {
+    const head = /^(\s*)permissions:\s*$/.exec(line);
+    if (!head) return;
+    const indent = (head[1] ?? "").length;
+    for (const next of lines.slice(index + 1)) {
+      if (next.trim() === "") continue;
+      const nextIndent = /^\s*/.exec(next)?.[0].length ?? 0;
+      if (nextIndent <= indent) break;
+      entries.push(next.trim());
+    }
+  });
+  return entries;
+}
+
+// The sorted values of a matrix `os:` list.
+function matrixOses(text: string): string[] {
+  const match = /^\s*os:\s*\[([^\]]*)\]\s*$/m.exec(text);
+  assert.ok(match, "the workflow must set a matrix os list");
+  return (match[1] ?? "").split(",").map((os) => os.trim()).sort();
+}
+
+// The comment block at the top of a workflow, before its first key.
+function headerBlock(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const end = lines.findIndex((line) => line.trim() !== "" && !line.startsWith("#"));
+  return lines.slice(0, end < 0 ? lines.length : end).join("\n");
+}
+
 test("ci.yml runs on pull requests and on pushes to main", () => {
   const text = readWorkflow("ci.yml");
   assert.match(text, /^on:/m);
@@ -73,14 +111,26 @@ test("ci.yml has no secret, no token and no id-token permission", () => {
   assert.doesNotMatch(text, /^\s*token:/m);
 });
 
-test("every uses line in every workflow pins a full commit SHA with the tag in a comment", () => {
-  assert.ok(existsSync(workflowDir), "the .github/workflows folder must exist");
-  const files = readdirSync(workflowDir).filter((name) => name.endsWith(".yml"));
-  assert.ok(files.length > 0, "the .github/workflows folder must hold a workflow");
-  for (const file of files) {
+test("every uses line in every .yml and .yaml workflow pins a full commit SHA with the tag in a comment", () => {
+  for (const file of workflowFiles()) {
     for (const value of usesValues(readWorkflow(file))) {
       assert.match(value, PINNED_USES, `${file}: "${value}" is not pinned to a SHA with a tag comment`);
     }
+  }
+  assert.ok(workflowFiles().length > 0, "the .github/workflows folder must hold a workflow");
+});
+
+test("ci.yml's permissions are exactly contents: read", () => {
+  assert.deepEqual(permissionEntries(readWorkflow("ci.yml")), ["contents: read"]);
+});
+
+test("each workflow's matrix is exactly windows-latest and ubuntu-latest, with Node 22", () => {
+  for (const file of ["ci.yml", "npm.yml"]) {
+    const text = readWorkflow(file);
+    assert.deepEqual(matrixOses(text), ["ubuntu-latest", "windows-latest"], `${file} must test on exactly these two systems`);
+    const versions = nodeVersions(text);
+    assert.ok(versions.length > 0, `${file} must set node-version`);
+    for (const version of versions) assert.equal(version, "22", `${file} must use Node 22`);
   }
 });
 
@@ -118,10 +168,11 @@ test("npm.yml runs only on a published release, with no push trigger", () => {
   assert.match(text, /types:\s*\[\s*published\s*\]/);
   assert.doesNotMatch(text, /^\s+push:/m, "npm.yml must have no push trigger: the bump commit carries [skip ci]");
   assert.doesNotMatch(text, /^\s+paths:/m);
+  assert.doesNotMatch(text, /^\s+(schedule|workflow_dispatch|workflow_run):/m, "npm.yml must have no schedule, workflow_dispatch or workflow_run trigger");
   assert.doesNotMatch(text, /^\s+pull_request/m);
 });
 
-test("npm.yml tests on Windows and Ubuntu with Node 22, and the publish job needs the tests", () => {
+test("npm.yml tests on Windows and Ubuntu with Node 22, runs the pack dry run, and the publish job needs the tests", () => {
   const text = readWorkflow("npm.yml");
   const tests = jobBlock(text, "test");
   assert.match(tests, /os:\s*\[[^\]]*\bwindows-latest\b[^\]]*\]/);
@@ -129,6 +180,7 @@ test("npm.yml tests on Windows and Ubuntu with Node 22, and the publish job need
   assert.ok(hasRunStep(tests, "npm ci"), "the test job must run npm ci");
   assert.ok(hasRunStep(tests, "npm run typecheck"), "the test job must run npm run typecheck");
   assert.ok(hasRunStep(tests, "npm test"), "the test job must run npm test");
+  assert.ok(hasRunStep(tests, "npm pack --dry-run"), "the test job must run npm pack --dry-run, as ci.yml does");
   const versions = nodeVersions(text);
   assert.ok(versions.length > 0, "npm.yml must set node-version");
   for (const version of versions) assert.equal(version, "22");
@@ -139,6 +191,7 @@ test("npm.yml's check-version job compares the release tag with package.json, wi
   const text = readWorkflow("npm.yml");
   const check = jobBlock(text, "check-version");
   assert.match(check, /github\.event\.release\.tag_name/, "check-version must read the release tag");
+  assert.match(check, /if \[ "\$RELEASE_TAG" = "\$new_version" \]; then/, "check-version must compare the release tag with the version");
   assert.doesNotMatch(check, /\bpush\b/, "check-version must have no push branch");
   assert.doesNotMatch(check, /github\.event\.before|BEFORE_SHA|git show/, "check-version must not read the commit before a push");
   assert.doesNotMatch(text, /\bnpm\s+(view|info|search|access|owner|whoami)\b/, "npm.yml must not call the npm registry");
@@ -146,13 +199,32 @@ test("npm.yml's check-version job compares the release tag with package.json, wi
 
 test("npm.yml grants id-token write and no other write permission", () => {
   const text = readWorkflow("npm.yml");
-  const writes = text.split(/\r?\n/).filter((line) => /:\s*write\s*$/.test(line));
+  // Comment lines are not permissions. Any other line that names a write permission must be exactly id-token: write.
+  const writes = text.split(/\r?\n/).filter((line) => !/^\s*#/.test(line) && /:\s*write\b/.test(line));
   assert.ok(writes.length > 0, "the publish job must have a write permission");
   for (const line of writes) {
     assert.match(line, /^\s*id-token:\s*write\s*$/, `"${line.trim()}" is a write permission other than id-token`);
   }
   assert.match(jobBlock(text, "publish"), /^\s+id-token:\s*write\s*$/m);
   assert.doesNotMatch(text, /write-all/);
+});
+
+test("the publish job's permissions are exactly contents: read and id-token: write", () => {
+  assert.deepEqual(permissionEntries(jobBlock(readWorkflow("npm.yml"), "publish")), ["contents: read", "id-token: write"]);
+});
+
+test("every checkout in npm.yml sets persist-credentials: false, so the token is not kept in git config", () => {
+  const text = readWorkflow("npm.yml");
+  const checkouts = text.match(/actions\/checkout@/g)?.length ?? 0;
+  assert.ok(checkouts > 0, "npm.yml must check out the repository");
+  const kept = text.match(/^\s+persist-credentials:\s*false\s*$/gm)?.length ?? 0;
+  assert.equal(kept, checkouts, "each checkout in npm.yml must set persist-credentials: false");
+});
+
+test("the publish job's if has no always(), failure() or cancelled(), so it runs only when the jobs before it succeed", () => {
+  const condition = jobIf(jobBlock(readWorkflow("npm.yml"), "publish"));
+  assert.notEqual(condition, "", "the publish job must have an if:");
+  assert.doesNotMatch(condition, /always\(\)|failure\(\)|cancelled\(\)/);
 });
 
 test("npm.yml pins npm 11.5.1 or newer, installs dependencies, and publishes with provenance", () => {
@@ -165,6 +237,14 @@ test("npm.yml pins npm 11.5.1 or newer, installs dependencies, and publishes wit
   assert.doesNotMatch(publish, /npm@latest/);
   assert.ok(hasRunStep(publish, "npm ci"), "the publish job must run npm ci, because the prepack step builds the package");
   assert.ok(hasRunStep(publish, "npm publish --provenance"), "the publish job must run npm publish --provenance");
+});
+
+test("the publish job installs exactly npm 11.5.1, and no workflow names npm@latest", () => {
+  const installs = [...jobBlock(readWorkflow("npm.yml"), "publish").matchAll(/npm install -g npm@([\w.]+)/g)].map((match) => match[1]);
+  assert.deepEqual(installs, ["11.5.1"]);
+  for (const file of workflowFiles()) {
+    assert.doesNotMatch(readWorkflow(file), /npm@latest/, `${file} must not name npm@latest`);
+  }
 });
 
 test("npm.yml holds no npm token and reads no secret", () => {
@@ -186,13 +266,15 @@ test("npm.yml publishes only in the maintainer's repository, and only when check
   );
 });
 
-test("npm.yml says at its top that it is written and not run, that it publishes only from a published release, and that the first publish is the maintainer's", () => {
-  const header = readWorkflow("npm.yml").split(/\r?\n/).slice(0, 20).join("\n");
+test("npm.yml's header says it is not run, that it publishes only from a published release, that creating the release is the maintainer's go-ahead, and that it checks the repository and the tag only", () => {
+  const header = headerBlock(readWorkflow("npm.yml"));
   assert.match(header, /not run/i);
   assert.match(header, /trusted publisher/i);
   assert.match(header, /terminal/i);
   assert.match(header, /published release/i);
   assert.match(header, /\[skip ci\]/);
+  assert.match(header, /creating a (published )?release is the maintainer's go-ahead for the publish/i);
+  assert.match(header, /checks the repository and the tag only/);
 });
 
 test("npm.yml uses only the action pins that ci.yml uses", () => {
