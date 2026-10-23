@@ -34,9 +34,10 @@ import { type AgentAdapter, type Context, type Step, UnsupportedScope } from "./
 //
 // An entry or table that differs from the one this tool writes is never removed or replaced, by install, update or uninstall. It is
 // left in place with its record, and the step is an error. An unedited recorded entry or table is replaced by install, and the project
-// file keeps a backup. The project table is text that this adapter writes, so its content is checked against what it writes. The
-// global entry is in the Codex configuration file, so its content is checked there too. ASSUMED: codex mcp add writes the global entry
-// to that file.
+// file keeps a backup. The project table is text that this adapter writes. An entry is edited when its arguments are not the program path the
+// record names, followed by serve, when its command is not an absolute path, or when it has an env key with content. The global entry
+// is in the Codex configuration file, and it is checked the same way. Other keys are not compared, and a moved Node path is not an
+// edit. ASSUMED: codex mcp add writes the global entry to that file.
 
 const SCOPES = supportedScopes("codex");
 
@@ -206,21 +207,62 @@ const withoutServer = (doc: Doc): Doc => {
   return { ...doc, mcp_servers: servers };
 };
 
-// Whether the server table holds exactly the command and the arguments this tool writes.
+// Whether the server table holds exactly this command and these arguments. It is used to check a table that was just written.
 const holdsEntry = (doc: Doc, command: string, args: readonly string[]): boolean => {
-  const entry = serversOf(doc)?.[DIRECT_KEY];
-  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-    return false;
-  }
-  const fields = entry as Doc;
-  const list = fields.args;
+  const fields = entryFields(doc);
+  const list = fields?.args;
   return (
-    Object.keys(fields).length === 2 &&
+    fields !== undefined &&
     fields.command === command &&
     Array.isArray(list) &&
     list.length === args.length &&
     list.every((value, index) => value === args[index])
   );
+};
+
+// The fields of this tool's entry in a document, or undefined when the document has no table under the server's key.
+const entryFields = (doc: Doc): Doc | undefined => {
+  const entry = serversOf(doc)?.[DIRECT_KEY];
+  return typeof entry === "object" && entry !== null && !Array.isArray(entry) ? (entry as Doc) : undefined;
+};
+
+// The program path that the record names for a scope, which the flow records after a successful install. Undefined when the record
+// names none.
+const recordedProgram = (items: readonly Item[]): string | undefined => {
+  const server = items.find((item) => item.kind === "server");
+  return server?.kind === "server" ? server.cliPath : undefined;
+};
+
+// An env value that is an empty table holds nothing, so it does not make the entry edited.
+const isEmptyTable = (value: unknown): boolean =>
+  typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0;
+
+// Whether the entry differs from what this tool wrote. It is edited when one of these holds, and only then:
+// - its arguments are not the recorded program path followed by "serve". With no recorded program path the entry is edited, so the
+//   check fails closed;
+// - its command is not an absolute path;
+// - it has an env key that is not an empty table, because a token may sit there.
+// The command is not compared with the Node path of this run, so a moved Node path does not make the entry edited. Other keys, such as
+// ones the Codex CLI may add, are not compared. An entry that is not a table is edited.
+const entryEdited = (doc: Doc, recorded: string | undefined): boolean => {
+  const fields = entryFields(doc);
+  if (fields === undefined || recorded === undefined) {
+    return true;
+  }
+  let expectedArgs: readonly string[];
+  try {
+    expectedArgs = directEntry(recorded).args;
+  } catch {
+    return true;
+  }
+  const list = fields.args;
+  if (!Array.isArray(list) || list.length !== expectedArgs.length || !list.every((value, index) => value === expectedArgs[index])) {
+    return true;
+  }
+  if (typeof fields.command !== "string" || !path.isAbsolute(fields.command)) {
+    return true;
+  }
+  return Object.hasOwn(fields, "env") && !isEmptyTable(fields.env);
 };
 
 // The lines of a text, each with its line ending. Joining them gives back the text exactly.
@@ -328,13 +370,14 @@ const WORD_BREAK = /[\s|│:,;()[\]"'=]+/;
 // is not verified. This is the check before an install, so a listing that shows the name in any position stops the install.
 const listsEntryWord = (listing: string): boolean => listing.split(WORD_BREAK).includes(DIRECT_KEY);
 
-// Whether a failed removal says that the entry is not installed. The line must name the entry and use a phrase that says it is
-// missing. ASSUMED: the wording of codex, which is not verified. A failure without these phrases keeps the record.
+// Whether a failed removal says that the entry is not installed. The line must name the entry as a whole word, so a longer name such
+// as multi-account-supabase-2 does not count, and it must use a phrase that says the entry is missing. ASSUMED: the wording of codex,
+// which is not verified. A failure without these phrases keeps the record.
 const MISSING_PHRASE = /not found|not installed|does not exist|no such|no mcp server/i;
 const saysNotInstalled = (result: CommandResult): boolean =>
   `${result.stderr}\n${result.stdout}`
     .split(/\r?\n/)
-    .some((line) => line.includes(DIRECT_KEY) && MISSING_PHRASE.test(line));
+    .some((line) => listsEntryWord(line) && MISSING_PHRASE.test(line));
 
 // The refusal for a record that cannot be read. It names the file and the reason, and it says that nothing was changed.
 const stateRefusal = (error: unknown): string => {
@@ -402,7 +445,7 @@ const missingFolders = async (base: string, target: string): Promise<string[]> =
 // Drops from the record the folders of the list that are not on disk, and keeps every other record. A folder that stays on disk
 // keeps its record, because this tool made it. Used when a folder could not be made, so the record does not list a folder that is
 // not there.
-const dropMissingFolders = async (key: string, folders: readonly string[]): Promise<void> => {
+const dropMissingFolders = async (key: string, folders: readonly string[], env: NodeJS.ProcessEnv): Promise<void> => {
   const absent: string[] = [];
   for (const folder of folders) {
     if (!(await isFolder(folder))) {
@@ -412,20 +455,25 @@ const dropMissingFolders = async (key: string, folders: readonly string[]): Prom
   if (absent.length === 0) {
     return;
   }
-  const current = await recordedItems("codex", key);
-  await forget("codex", key);
+  const current = await recordedItems("codex", key, undefined, env);
+  await forget("codex", key, undefined, env);
   for (const item of current) {
     if (!(item.kind === "directory" && absent.includes(item.path))) {
-      await record("codex", key, item);
+      await record("codex", key, item, undefined, env);
     }
   }
 };
 
 // The error for a change that failed after its folders were recorded. The record is set back first. When that fails too, the
 // error says so, so the record is not left without a word.
-const failedWithRecord = async (error: unknown, key: string, folders: readonly string[]): Promise<unknown> => {
+const failedWithRecord = async (
+  error: unknown,
+  key: string,
+  folders: readonly string[],
+  env: NodeJS.ProcessEnv,
+): Promise<unknown> => {
   try {
-    await dropMissingFolders(key, folders);
+    await dropMissingFolders(key, folders, env);
     return error;
   } catch (restoreError) {
     return new Error(`${checkFailure(error)}. The record could not be set back: ${checkFailure(restoreError)}`, { cause: error });
@@ -445,13 +493,13 @@ const writeSkill = async (ctx: Context, scope: "global" | "project", site: Skill
   try {
     pending = recordableFolders(ctx, scope, await missingFolders(site.base, site.folder));
     for (const toMake of pending) {
-      await record("codex", key, { kind: "directory", path: toMake });
+      await record("codex", key, { kind: "directory", path: toMake }, undefined, ctx.env);
     }
     await installSkill(ctx, ctx.packageRoot, site.folder, async () => {
-      await record("codex", key, { kind: "file", path: path.join(site.folder, SKILL_FILE), createdByUs: true });
+      await record("codex", key, { kind: "file", path: path.join(site.folder, SKILL_FILE), createdByUs: true }, undefined, ctx.env);
     });
   } catch (error) {
-    throw await failedWithRecord(error, key, pending);
+    throw await failedWithRecord(error, key, pending, ctx.env);
   }
 };
 
@@ -587,15 +635,15 @@ const endRecord = async (
         folders.push(item.path);
       }
     }
-    await forget("codex", key);
+    await forget("codex", key, undefined, ctx.env);
     for (const folder of folders) {
-      await record("codex", key, { kind: "directory", path: folder });
+      await record("codex", key, { kind: "directory", path: folder }, undefined, ctx.env);
     }
     for (const backup of backups) {
-      await record("codex", key, { kind: "file", path: backup, createdByUs: true });
+      await record("codex", key, { kind: "file", path: backup, createdByUs: true }, undefined, ctx.env);
     }
     for (const item of kept) {
-      await record("codex", key, item);
+      await record("codex", key, item, undefined, ctx.env);
     }
     return undefined;
   } catch (error) {
@@ -624,7 +672,7 @@ const installGlobal = async (ctx: Context): Promise<Step> => {
   const key = scopeKey("global", ctx.projectDir);
   let items: readonly Item[];
   try {
-    items = await recordedItems("codex", key);
+    items = await recordedItems("codex", key, undefined, ctx.env);
   } catch (error) {
     return step("global", "error", stateRefusal(error));
   }
@@ -644,7 +692,7 @@ const installGlobal = async (ctx: Context): Promise<Step> => {
     // This tool wrote the entry, so it is replaced: the recorded entry is removed, then added. An entry that was edited is not replaced,
     // and that check runs before any command. The result of the removal is read only when the add fails, so the step can say what codex
     // now lists. The entry may be gone already, so a failed removal is not an error here.
-    const edited = await globalEdited(ctx);
+    const edited = await globalEdited(ctx, items);
     if (edited !== undefined) {
       return step("global", "error", edited);
     }
@@ -680,10 +728,16 @@ const installGlobal = async (ctx: Context): Promise<Step> => {
     }
     if (!recorded) {
       try {
-        await record("codex", key, { kind: "mcp-entry", name: DIRECT_KEY });
+        await record("codex", key, { kind: "mcp-entry", name: DIRECT_KEY }, undefined, ctx.env);
       } catch (error) {
         return step("global", "error", await unrecordedEntryText(ctx, error));
       }
+    }
+    // The record names the program path the entry now points at, so a later run can tell a moved Node path from an edited entry.
+    try {
+      await record("codex", key, { kind: "server", cliPath: ctx.cliPath }, undefined, ctx.env);
+    } catch (error) {
+      return step("global", "error", `The server entry was added, but the command line path could not be recorded: ${checkFailure(error)}.`);
     }
   }
   try {
@@ -709,7 +763,7 @@ const editedProjectText = (file: string): string =>
 // undefined when the entry matches or is absent. The entry is in the Codex configuration file in CODEX_HOME, or in .codex in the home
 // folder. ASSUMED: codex mcp add writes the entry to that file, which is not verified. When the file holds no entry under this name, the
 // check passes, and codex mcp decides as before. Nothing is changed by this check.
-const globalEdited = async (ctx: Context): Promise<string | undefined> => {
+const globalEdited = async (ctx: Context, items: readonly Item[]): Promise<string | undefined> => {
   const site = globalSite(ctx.env);
   if (site === undefined) {
     return "The home folder is not known from the environment, and CODEX_HOME is not set, so nothing was changed.";
@@ -725,27 +779,21 @@ const globalEdited = async (ctx: Context): Promise<string | undefined> => {
   if (loaded.kind !== "ok" || !hasServer(loaded.doc)) {
     return undefined;
   }
-  let expected: { command: string; args: string[] };
-  try {
-    expected = directEntry(ctx.cliPath);
-  } catch (error) {
-    return `The entry ${DIRECT_KEY} in ${file} cannot be checked: ${checkFailure(error)}`;
-  }
-  return holdsEntry(loaded.doc, expected.command, expected.args) ? undefined : editedGlobalText();
+  return entryEdited(loaded.doc, recordedProgram(items)) ? editedGlobalText() : undefined;
 };
 
 // An update changes only an entry that this tool wrote and that matches what it writes. An entry that differs is left in place.
 const updateGlobal = async (ctx: Context): Promise<Step> => {
   let items: readonly Item[];
   try {
-    items = await recordedItems("codex", scopeKey("global", ctx.projectDir));
+    items = await recordedItems("codex", scopeKey("global", ctx.projectDir), undefined, ctx.env);
   } catch (error) {
     return step("global", "error", stateRefusal(error));
   }
   if (!items.some(isEntryRecord)) {
     return step("global", "skipped", NOT_INSTALLED);
   }
-  const edited = await globalEdited(ctx);
+  const edited = await globalEdited(ctx, items);
   if (edited !== undefined) {
     return step("global", "error", edited);
   }
@@ -756,7 +804,7 @@ const uninstallGlobal = async (ctx: Context): Promise<Step> => {
   const key = scopeKey("global", ctx.projectDir);
   let items: readonly Item[];
   try {
-    items = await recordedItems("codex", key);
+    items = await recordedItems("codex", key, undefined, ctx.env);
   } catch (error) {
     return step("global", "error", stateRefusal(error));
   }
@@ -770,7 +818,7 @@ const uninstallGlobal = async (ctx: Context): Promise<Step> => {
   }
   if (entryRecorded) {
     // An entry that differs from the one this tool writes is left in place with its record, and the step is an error.
-    const edited = await globalEdited(ctx);
+    const edited = await globalEdited(ctx, items);
     if (edited !== undefined) {
       return step("global", "error", edited);
     }
@@ -823,7 +871,7 @@ const uninstallGlobal = async (ctx: Context): Promise<Step> => {
 const doctorGlobal = async (ctx: Context): Promise<Step | undefined> => {
   let items: readonly Item[];
   try {
-    items = await recordedItems("codex", scopeKey("global", ctx.projectDir));
+    items = await recordedItems("codex", scopeKey("global", ctx.projectDir), undefined, ctx.env);
   } catch (error) {
     return step("global", "error", stateRefusal(error));
   }
@@ -857,7 +905,7 @@ const writeProjectTable = async (ctx: Context, loaded: Extract<Loaded, { kind: "
   const key = scopeKey("project", ctx.projectDir);
   let items: readonly Item[];
   try {
-    items = await recordedItems("codex", key);
+    items = await recordedItems("codex", key, undefined, ctx.env);
   } catch (error) {
     return step("project", "error", stateRefusal(error));
   }
@@ -865,7 +913,7 @@ const writeProjectTable = async (ctx: Context, loaded: Extract<Loaded, { kind: "
     return step("project", "error", `${file} already has the table ${SERVER_TABLE}, which this tool did not write, so nothing was changed.`);
   }
   // A recorded table that was edited is not replaced. The text says how to remove it by hand.
-  if (loaded.kind === "ok" && hasServer(loaded.doc) && !holdsEntry(loaded.doc, command, args)) {
+  if (loaded.kind === "ok" && hasServer(loaded.doc) && entryEdited(loaded.doc, recordedProgram(items))) {
     return step("project", "error", editedProjectText(file));
   }
   const before = loaded.kind === "ok" ? loaded.text : "";
@@ -902,27 +950,29 @@ const writeProjectTable = async (ctx: Context, loaded: Extract<Loaded, { kind: "
   try {
     pending = ctx.dryRun ? [] : recordableFolders(ctx, "project", await missingFolders(ctx.projectDir, folder));
     for (const toMake of pending) {
-      await record("codex", key, { kind: "directory", path: toMake });
+      await record("codex", key, { kind: "directory", path: toMake }, undefined, ctx.env);
     }
     made = await ensureFolders(ctx, ctx.projectDir, folder);
   } catch (error) {
-    return step("project", "error", `Nothing was written to ${file}: ${checkFailure(await failedWithRecord(error, key, pending))}`);
+    return step("project", "error", `Nothing was written to ${file}: ${checkFailure(await failedWithRecord(error, key, pending, ctx.env))}`);
   }
   try {
     if (!ctx.dryRun) {
       await recordThenUndo(ctx, recordableFolders(ctx, "project", made), async () => {
         if (backup !== undefined) {
-          await record("codex", key, { kind: "file", path: backup, createdByUs: true });
+          await record("codex", key, { kind: "file", path: backup, createdByUs: true }, undefined, ctx.env);
         }
         if (loaded.kind === "missing") {
           // The file did not exist before, so this tool creates it. Uninstall may then remove the file.
-          await record("codex", key, { kind: "file", path: file, createdByUs: true });
+          await record("codex", key, { kind: "file", path: file, createdByUs: true }, undefined, ctx.env);
         }
-        await record("codex", key, { kind: "toml-table", path: file, table: SERVER_TABLE });
+        await record("codex", key, { kind: "toml-table", path: file, table: SERVER_TABLE }, undefined, ctx.env);
+        // The record names the program path the table now points at, as the global entry does.
+        await record("codex", key, { kind: "server", cliPath: ctx.cliPath }, undefined, ctx.env);
       });
     }
   } catch (error) {
-    return step("project", "error", `Nothing was written to ${file}: ${checkFailure(await failedWithRecord(error, key, pending))}`);
+    return step("project", "error", `Nothing was written to ${file}: ${checkFailure(await failedWithRecord(error, key, pending, ctx.env))}`);
   }
   if (backup !== undefined) {
     try {
@@ -1000,7 +1050,7 @@ const unusableConfig = async (
 ): Promise<Step> => {
   let items: readonly Item[];
   try {
-    items = await recordedItems("codex", scopeKey("project", ctx.projectDir));
+    items = await recordedItems("codex", scopeKey("project", ctx.projectDir), undefined, ctx.env);
   } catch (error) {
     return step("project", "error", stateRefusal(error));
   }
@@ -1021,21 +1071,15 @@ const updateProject = async (ctx: Context): Promise<Step> => {
   }
   let items: readonly Item[];
   try {
-    items = await recordedItems("codex", scopeKey("project", ctx.projectDir));
+    items = await recordedItems("codex", scopeKey("project", ctx.projectDir), undefined, ctx.env);
   } catch (error) {
     return step("project", "error", stateRefusal(error));
   }
   if (!tableRecorded(items, file)) {
     return step("project", "skipped", `The table in ${file} was not written by this tool, so nothing was changed.`);
   }
-  let expected: { command: string; args: string[] };
-  try {
-    expected = directEntry(ctx.cliPath);
-  } catch (error) {
-    return step("project", "error", `The table in ${file} cannot be checked: ${checkFailure(error)}`);
-  }
   // An update does not replace a table that differs from the one this tool writes. The table is left in place with its record.
-  if (!holdsEntry(loaded.doc, expected.command, expected.args)) {
+  if (entryEdited(loaded.doc, recordedProgram(items))) {
     return step("project", "error", editedProjectText(file));
   }
   return writeProjectTable(ctx, loaded);
@@ -1090,7 +1134,7 @@ const removeTable = async (
   }
   try {
     if (!ctx.dryRun) {
-      await record("codex", key, { kind: "file", path: backup, createdByUs: true });
+      await record("codex", key, { kind: "file", path: backup, createdByUs: true }, undefined, ctx.env);
     }
   } catch (error) {
     return { error: `The backup ${backup} could not be recorded (${checkFailure(error)}), so ${file} was not changed.` };
@@ -1122,7 +1166,7 @@ const uninstallProject = async (ctx: Context): Promise<Step> => {
   }
   let items: readonly Item[];
   try {
-    items = await recordedItems("codex", key);
+    items = await recordedItems("codex", key, undefined, ctx.env);
   } catch (error) {
     return step("project", "error", stateRefusal(error));
   }
@@ -1135,16 +1179,9 @@ const uninstallProject = async (ctx: Context): Promise<Step> => {
   let madeBackup: string | undefined;
   let folderRemoved = false;
   if (loaded.kind === "ok" && tableInFile && tableRecorded(items, file)) {
-    let expected: { command: string; args: string[] };
-    try {
-      expected = directEntry(ctx.cliPath);
-    } catch (error) {
-      return step("project", "error", `The table in ${file} cannot be checked: ${checkFailure(error)}`);
-    }
-    if (!holdsEntry(loaded.doc, expected.command, expected.args)) {
-      // The record lists a table, but the table in the file is not the one this tool writes, for example after the Node binary
-      // changed. Nothing is removed and the record stays as it is, so the step is an error. The step says how to remove the table by
-      // hand.
+    if (entryEdited(loaded.doc, recordedProgram(items))) {
+      // The record lists a table, but the table in the file differs from the one this tool wrote. Nothing is removed and the record
+      // stays as it is, so the step is an error. The step says how to remove the table by hand.
       return step("project", "error", editedProjectText(file));
     }
     const removal = await removeTable(ctx, key, file, loaded, ownFile, ownFolder);
@@ -1227,7 +1264,7 @@ const doctorProject = async (ctx: Context): Promise<Step | undefined> => {
   const file = configFile(ctx.projectDir);
   let items: readonly Item[];
   try {
-    items = await recordedItems("codex", scopeKey("project", ctx.projectDir));
+    items = await recordedItems("codex", scopeKey("project", ctx.projectDir), undefined, ctx.env);
   } catch (error) {
     return step("project", "error", stateRefusal(error));
   }
@@ -1244,13 +1281,13 @@ const doctorProject = async (ctx: Context): Promise<Step | undefined> => {
   if (loaded.kind === "missing" || !hasServer(loaded.doc)) {
     return step("project", "skipped", `The recorded table is not in ${file}.`);
   }
-  let expected: { command: string; args: string[] };
+  // A relative program path is an error in its own right, so the doctor reports it, as before.
   try {
-    expected = directEntry(ctx.cliPath);
+    directEntry(ctx.cliPath);
   } catch (error) {
     return step("project", "error", `The table in ${file} cannot be checked: ${checkFailure(error)}`);
   }
-  if (!holdsEntry(loaded.doc, expected.command, expected.args)) {
+  if (entryEdited(loaded.doc, recordedProgram(items))) {
     return step("project", "skipped", `The recorded table in ${file} does not hold the server entry this tool writes.`);
   }
   return step("project", "ok", `The server table is in ${file}.`);
